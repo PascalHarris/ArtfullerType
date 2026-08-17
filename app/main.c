@@ -164,6 +164,22 @@ void UpdateFileMenuState(void)
     different one is front, and this makes sure that redraws with its
     own document's TE, not whichever happens to be frontmost.
 
+    SetPort(w) is the fix for a real bug found after Milestone 3 shipped:
+    every draw call below (EraseRect, TEUpdate, DrawControls) draws into
+    whatever port is CURRENT, not automatically into w just because w
+    was passed in -- and nothing here, or anywhere before this was
+    called, guaranteed the current port was actually w's. It happened
+    to work throughout Milestones 1-2 because the event loop's own
+    SetPort(doc->window) (using the front document) and w were always
+    the same window with only one ever able to exist. Once a second
+    window existed, an update event for a background window -- e.g.
+    from uncovering it -- would still draw with the port left over from
+    whichever window was actually front, so the background window's own
+    content never got repainted. Toggling view mode on the affected
+    window worked around it only because that toggle's own InvalRect
+    happened to fire while that same window was front, which coincidentally
+    got the port right.
+
     BeginUpdate/EndUpdate still run unconditionally -- that's Window
     Manager bookkeeping for w's update region and has nothing to do
     with which document (if any) owns it; only the actual redraw is
@@ -175,6 +191,7 @@ static void DoUpdate(WindowPtr w)
 {
     DocumentPtr doc = DocumentForWindow(w);
 
+    SetPort(w);
     BeginUpdate(w);
     EraseRect(&w->portRect);
     if (doc != NULL) {
@@ -447,9 +464,17 @@ static void EventLoop(void)
                        3: a background window can now be deactivated
                        while a different one activates in the same
                        pass, and this makes sure each gets its own
-                       document's TE (de)activated, not FrontDocument()'s. */
+                       document's TE (de)activated, not FrontDocument()'s.
+
+                       SetPort here is the same class of fix as the one
+                       in DoUpdate above: TEActivate/TEDeactivate draw
+                       (showing/hiding the caret and switching the
+                       selection's active/inactive look), and nothing
+                       before this guaranteed the current port was
+                       actually the window named by event.message. */
                     DocumentPtr activateDoc = DocumentForWindow((WindowPtr) event.message);
 
+                    SetPort((WindowPtr) event.message);
                     if (activateDoc != NULL) {
                         if ((event.modifiers & activeFlag) != 0)
                             TEActivate(activateDoc->activeTE);

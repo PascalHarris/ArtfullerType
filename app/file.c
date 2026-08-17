@@ -1,5 +1,62 @@
 #include "app.h"
 
+/*
+    Whether name's last 3 characters are ".md", case-insensitively --
+    HFS filenames are case-preserving but not case-sensitive, so
+    "NOTES.MD" and "notes.Md" both count as already having the
+    extension. Pascal string: name[0] is the length byte, name[1] is
+    the first character, name[len] is the last.
+*/
+static Boolean HasMarkdownExtension(StringPtr name)
+{
+    short len = name[0];
+    short i;
+    unsigned char suffix[3];
+
+    if (len < 3)
+        return false;
+
+    for (i = 0; i < 3; i++) {
+        unsigned char c = name[len - 2 + i];
+        if (c >= 'a' && c <= 'z')
+            c = (unsigned char) (c - 32);
+        suffix[i] = c;
+    }
+    return (suffix[0] == '.' && suffix[1] == 'M' && suffix[2] == 'D');
+}
+
+/*
+    Force-appends ".md" if it's not already there -- markdown is the
+    only thing this app writes, so a saved file without the extension
+    would be a real (if minor) usability trap: Finder wouldn't offer to
+    open it with the right kind of app, and this app's own Open dialog
+    filters on 'TEXT' anyway so it'd still show up there, but every
+    other markdown-aware tool on a real or emulated Mac would miss it.
+    SFPutFile's suggested name is already "Untitled.md" (file.c's
+    DoSaveAs), but the person saving is always free to type over it and
+    drop the extension, so this enforces it regardless of what they
+    typed.
+
+    HFS filenames are limited to 31 characters -- truncated to leave
+    room for the extension rather than silently overflowing Str255 or
+    producing an invalid (too-long) name.
+*/
+static void EnsureMarkdownExtension(Str255 name)
+{
+    short len = name[0];
+
+    if (HasMarkdownExtension(name))
+        return;
+
+    if (len > 28)
+        len = 28;
+
+    name[len + 1] = '.';
+    name[len + 2] = 'm';
+    name[len + 3] = 'd';
+    name[0] = (unsigned char) (len + 3);
+}
+
 static void RefreshActiveView(DocumentPtr doc)
 {
     if (doc->hideMarkdown)
@@ -126,6 +183,7 @@ Boolean DoSaveAs(void)
         return false;
 
     BlockMove(reply.fName, doc->fileName, reply.fName[0] + 1);
+    EnsureMarkdownExtension(doc->fileName);
     doc->vRefNum = reply.vRefNum;
     doc->haveFile = true;
     WriteFile(doc->fileName, doc->vRefNum);

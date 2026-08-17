@@ -119,9 +119,30 @@ DocumentPtr CreateNewDocument(void)
     TextFont(fontNum);
     TextSize(CurrentFontSize());
 
+    /*
+        Scrollbar first, flush against the window's right edge and
+        spanning the full window height -- the standard Mac layout
+        (e.g. TeachText), and what "scroll bars should be tight
+        against the window edge" specifically asks for. The 1px
+        overlap on all three outer edges (right/top/bottom) is the
+        usual classic-Mac convention so the control's own frame blends
+        with the window's, rather than leaving a visible 1px gap.
+
+        Text viewRect is then inset from the scrollbar's left edge on
+        the right (not from the window's raw right edge), so text
+        never runs underneath it. Left/top/bottom use the small
+        MARGIN_H/MARGIN_TOP/MARGIN_BOTTOM text margins (see app.h).
+    */
+    sbRect.right = doc->window->portRect.right + 1;
+    sbRect.left = sbRect.right - SCROLLBAR_WIDTH;
+    sbRect.top = doc->window->portRect.top - 1;
+    sbRect.bottom = doc->window->portRect.bottom + 1;
+    doc->scrollBar = NewControl(doc->window, &sbRect, "\p", false, 0, 0, 0, scrollBarProc, 0);
+    doc->scrollBarVisible = false;
+
     viewRect = doc->window->portRect;
     viewRect.left += MARGIN_H;
-    viewRect.right -= MARGIN_H;
+    viewRect.right -= (SCROLLBAR_WIDTH + MARGIN_H);
     viewRect.top += MARGIN_TOP;
     viewRect.bottom -= MARGIN_BOTTOM;
 
@@ -130,14 +151,6 @@ DocumentPtr CreateNewDocument(void)
     doc->hideMarkdown = true;
     doc->activeTE = doc->hideMarkdown ? doc->hiddenTE : doc->te;
     TEActivate(doc->activeTE);
-
-    sbRect = viewRect;
-    sbRect.left = viewRect.right + (MARGIN_H - SCROLLBAR_WIDTH) / 2;
-    sbRect.right = sbRect.left + SCROLLBAR_WIDTH;
-    sbRect.top -= 1;
-    sbRect.bottom += 1;
-    doc->scrollBar = NewControl(doc->window, &sbRect, "\p", false, 0, 0, 0, scrollBarProc, 0);
-    doc->scrollBarVisible = false;
 
     doc->haveFile = false;
     doc->dirty = false;

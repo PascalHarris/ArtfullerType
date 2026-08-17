@@ -19,9 +19,24 @@
 
 #include "document.h"
 
-#define MARGIN_H     64
-#define MARGIN_TOP   32
-#define MARGIN_BOTTOM 24
+/*
+    Text-to-window-edge margins. These were sized (64/32/24) for the
+    original full-screen "distraction free" window, where a wide margin
+    was the point -- much too large for a standard-sized window, where
+    it just eats most of the content area and (per the scrollbar layout
+    in document.c's CreateNewDocument) pushed the scrollbar in from the
+    window edge instead of flush against it. Cut to a few pt on every
+    side.
+
+    Still a compile-time constant, not a real preference -- genuinely
+    should become one (a per-user saved setting, the same way zoom
+    already is via kZoomPrefType/kZoomPrefID in zoom.c), just not part
+    of this pass. Flagging rather than building preference storage
+    unasked.
+*/
+#define MARGIN_H     8
+#define MARGIN_TOP   8
+#define MARGIN_BOTTOM 8
 #define MENU_BAR_HEIGHT 20
 #define FONT_SIZE 18
 #define SCROLLBAR_WIDTH 16
