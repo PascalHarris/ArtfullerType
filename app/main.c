@@ -46,6 +46,28 @@
 
 #include "app.h"
 
+/*
+    Confirmed by an actual build error, not assumed this time: this
+    toolchain's Events.h does not declare suspendResumeMessage or
+    resumeFlag, despite both being standard, stable Event Manager
+    constants documented in Inside Macintosh ("Handling Suspend and
+    Resume Events", IM: Toolbox Essentials) -- the same chapter the
+    osEvt handling in EventLoop below follows. Rather than guess again
+    at which header might expose them in this particular toolchain (the
+    Controls.h mistake a few rounds back was exactly that kind of
+    guess), defined directly: these are fixed, Apple-documented bit
+    values, not toolchain-specific behavior, so hardcoding them here
+    carries none of the risk an unverified #include did. #ifndef-
+    guarded in case some combination of headers this file doesn't
+    currently pull in does declare them after all.
+*/
+#ifndef suspendResumeMessage
+#define suspendResumeMessage 0x01
+#endif
+#ifndef resumeFlag
+#define resumeFlag 1
+#endif
+
 Boolean gDone = false;
 MenuHandle gFileMenu;
 MenuHandle gViewMenu;
@@ -350,6 +372,33 @@ static void DoMenuCommand(long menuResult)
     UpdateMenuBarLook();
 }
 
+/*
+    Shared by activateEvt and the osEvt/suspendResumeMessage handling in
+    EventLoop below -- MultiFinder can, and per Inside Macintosh's own
+    canonical DoOSEvent example (IM: Toolbox Essentials, "Handling
+    Suspend and Resume Events") is documented to, activate/deactivate a
+    window purely via osEvt when switching layers -- e.g. clicking into
+    another application's window -- with no accompanying activateEvt
+    guaranteed. Same SetPort-then-(de)activate sequence either way, so
+    both call this instead of duplicating it.
+*/
+static void ActivateWindowDocument(WindowPtr w, Boolean activating)
+{
+    DocumentPtr doc;
+
+    if (w == NULL)
+        return;
+
+    doc = DocumentForWindow(w);
+    SetPort(w);
+    if (doc != NULL) {
+        if (activating)
+            TEActivate(doc->activeTE);
+        else
+            TEDeactivate(doc->activeTE);
+    }
+}
+
 static void EventLoop(void)
 {
     EventRecord event;
@@ -362,8 +411,25 @@ static void EventLoop(void)
             doc = FrontDocument();
             /* Disposing a dialog/window doesn't restore the caller's port
                -- cheap insurance against any path (found or not) leaving
-               thePort dangling at a freed window's memory. */
-            SetPort(doc->window);
+               thePort dangling at a freed window's memory.
+
+               doc is no longer dereferenced unconditionally here, the
+               way it was before this fix. Reference classic-Mac event
+               loops guard FrontWindow()'s result before using it (e.g.
+               "if (FrontWindow()) IdleControls(FrontWindow());" in
+               published examples) rather than assuming it's always
+               non-NULL -- this now matches that standard rather than
+               assuming it can't happen. I can't fully verify from here
+               the exact mechanism connecting "clicked into another
+               application's window" to doc being NULL on some pass
+               through this loop -- that needs a real MultiFinder
+               environment to trace, which this environment doesn't
+               have -- but this guard is correct regardless of the
+               precise trigger, and the osEvt handling added below is
+               the documented, standard piece this app was missing for
+               MultiFinder layer switches generally. */
+            if (doc != NULL)
+                SetPort(doc->window);
             switch (event.what) {
                 case updateEvt:
                     DoUpdate((WindowPtr) event.message);
@@ -432,7 +498,13 @@ static void EventLoop(void)
                                 DoMenuCommand(MenuKey(key));
                             }
                         }
-                    } else {
+                    } else if (doc != NULL) {
+                        /* This app can only ever receive keystrokes
+                           while it's the active process, at which point
+                           doc shouldn't actually be NULL -- guarded
+                           anyway to match the same standard this loop
+                           now holds everywhere else to, not because a
+                           concrete path to NULL here is known. */
                         if (isContentKey) {
                             if (!doc->typingRunActive) {
                                 PushUndoSnapshot();
@@ -454,38 +526,60 @@ static void EventLoop(void)
                     break;
                 }
 
-                case activateEvt: {
-                    /* Resolved from event.message (the WindowPtr actually
-                       being activated/deactivated), not the front
-                       document -- fixed per MULTI_WINDOW_DESIGN.md §6/
-                       Milestone 2, written when only one window could
-                       exist so event.message always named that same
-                       window anyway. Genuinely matters as of Milestone
-                       3: a background window can now be deactivated
-                       while a different one activates in the same
-                       pass, and this makes sure each gets its own
-                       document's TE (de)activated, not FrontDocument()'s.
+                case activateEvt:
+                    /* Resolved from event.message (the WindowPtr
+                       actually being activated/deactivated), not the
+                       front document -- fixed per MULTI_WINDOW_DESIGN.md
+                       §6/Milestone 2, written when only one window
+                       could exist so event.message always named that
+                       same window anyway. Genuinely matters as of
+                       Milestone 3: a background window can now be
+                       deactivated while a different one activates in
+                       the same pass. ActivateWindowDocument (above)
+                       does the SetPort-then-(de)activate that used to
+                       be inline here -- shared with osEvt below, which
+                       needs the identical sequence for MultiFinder
+                       layer switches that arrive without a matching
+                       activateEvt at all. */
+                    ActivateWindowDocument((WindowPtr) event.message,
+                                            (event.modifiers & activeFlag) != 0);
+                    break;
 
-                       SetPort here is the same class of fix as the one
-                       in DoUpdate above: TEActivate/TEDeactivate draw
-                       (showing/hiding the caret and switching the
-                       selection's active/inactive look), and nothing
-                       before this guaranteed the current port was
-                       actually the window named by event.message. */
-                    DocumentPtr activateDoc = DocumentForWindow((WindowPtr) event.message);
-
-                    SetPort((WindowPtr) event.message);
-                    if (activateDoc != NULL) {
-                        if ((event.modifiers & activeFlag) != 0)
-                            TEActivate(activateDoc->activeTE);
-                        else
-                            TEDeactivate(activateDoc->activeTE);
+                case osEvt:
+                    /* The gap this whole fix is for: clicking into
+                       another application's window (Finder, or any
+                       other running app under MultiFinder/Process
+                       Manager) never reaches this app as a mouseDown --
+                       the OS intercepts that click and switches layers
+                       itself. The only notice this app gets is osEvt
+                       with suspendResumeMessage in the top byte of
+                       event.message (Inside Macintosh: Toolbox
+                       Essentials, "Handling Suspend and Resume Events"
+                       -- the DoOSEvent example there is exactly this
+                       case block). Bit 0 (resumeFlag) says which:
+                       resuming (this app just became active again) or
+                       suspending (something else just did). The other
+                       kind of osEvt, mouseMovedMessage, is for cursor-
+                       region tracking this app never requested
+                       (WaitNextEvent's mouseRgn parameter is NULL
+                       above) -- ignoring it here is correct, not an
+                       oversight. */
+                    if (((unsigned long) event.message >> 24) == suspendResumeMessage) {
+                        ActivateWindowDocument(FrontWindow(),
+                                                (event.message & resumeFlag) != 0);
                     }
                     break;
-                }
             }
         }
-        TEIdle(FrontDocument()->activeTE);
+
+        /* Runs every pass through the loop, whether or not
+           WaitNextEvent returned an event -- FrontDocument() can
+           legitimately be NULL here for the same reason noted above at
+           the top of the loop, so this no longer dereferences it
+           unconditionally either. */
+        doc = FrontDocument();
+        if (doc != NULL)
+            TEIdle(doc->activeTE);
     }
 }
 
