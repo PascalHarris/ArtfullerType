@@ -9,24 +9,27 @@ static void FreeSnapshot(UndoSnapshot *snap)
 
 void ClearUndoRedoStacks(void)
 {
+    DocumentPtr doc = FrontDocument();
     short i;
 
-    for (i = 0; i < gUndoCount; i++)
-        FreeSnapshot(&gUndoStack[i]);
-    gUndoCount = 0;
-    for (i = 0; i < gRedoCount; i++)
-        FreeSnapshot(&gRedoStack[i]);
-    gRedoCount = 0;
-    gTypingRunActive = false;
+    for (i = 0; i < doc->undoCount; i++)
+        FreeSnapshot(&doc->undoStack[i]);
+    doc->undoCount = 0;
+    for (i = 0; i < doc->redoCount; i++)
+        FreeSnapshot(&doc->redoStack[i]);
+    doc->redoCount = 0;
+    doc->typingRunActive = false;
 }
 
 void UpdateEditMenuState(void)
 {
+    DocumentPtr doc = FrontDocument();
+
     EnableItem(gEditMenu, iUndo);
     EnableItem(gEditMenu, iRedo);
-    if (gUndoCount == 0)
+    if (doc->undoCount == 0)
         DisableItem(gEditMenu, iUndo);
-    if (gRedoCount == 0)
+    if (doc->redoCount == 0)
         DisableItem(gEditMenu, iRedo);
 }
 
@@ -39,117 +42,120 @@ void UpdateEditMenuState(void)
 */
 void PushUndoSnapshot(void)
 {
+    DocumentPtr doc = FrontDocument();
     UndoSnapshot *slot;
     Handle textH;
     long len;
     short i;
 
-    if (gHideMarkdown)
+    if (doc->hideMarkdown)
         SyncHiddenToCanonical();
 
-    len = (**gTE).teLength;
+    len = (**doc->te).teLength;
     textH = NewHandle(len);
     HLock(textH);
-    HLock((**gTE).hText);
-    BlockMove(*(**gTE).hText, *textH, len);
-    HUnlock((**gTE).hText);
+    HLock((**doc->te).hText);
+    BlockMove(*(**doc->te).hText, *textH, len);
+    HUnlock((**doc->te).hText);
     HUnlock(textH);
 
-    if (gUndoCount == MAX_UNDO_LEVELS) {
-        FreeSnapshot(&gUndoStack[0]);
+    if (doc->undoCount == MAX_UNDO_LEVELS) {
+        FreeSnapshot(&doc->undoStack[0]);
         for (i = 0; i < MAX_UNDO_LEVELS - 1; i++)
-            gUndoStack[i] = gUndoStack[i + 1];
-        gUndoCount--;
+            doc->undoStack[i] = doc->undoStack[i + 1];
+        doc->undoCount--;
     }
 
-    slot = &gUndoStack[gUndoCount++];
+    slot = &doc->undoStack[doc->undoCount++];
     slot->textH = textH;
     slot->length = len;
-    slot->selStart = (**gActiveTE).selStart;
-    slot->selEnd = (**gActiveTE).selEnd;
+    slot->selStart = (**doc->activeTE).selStart;
+    slot->selEnd = (**doc->activeTE).selEnd;
 
-    for (i = 0; i < gRedoCount; i++)
-        FreeSnapshot(&gRedoStack[i]);
-    gRedoCount = 0;
+    for (i = 0; i < doc->redoCount; i++)
+        FreeSnapshot(&doc->redoStack[i]);
+    doc->redoCount = 0;
 
     UpdateEditMenuState();
 }
 
 /* Same idea as PushUndoSnapshot, but onto the redo stack -- called
    right before undoing, so redoing can bring the undone state back. */
-static void PushRedoSnapshot(void)
+static void PushRedoSnapshot(DocumentPtr doc)
 {
     UndoSnapshot *slot;
     Handle textH;
     long len;
     short i;
 
-    if (gHideMarkdown)
+    if (doc->hideMarkdown)
         SyncHiddenToCanonical();
 
-    len = (**gTE).teLength;
+    len = (**doc->te).teLength;
     textH = NewHandle(len);
     HLock(textH);
-    HLock((**gTE).hText);
-    BlockMove(*(**gTE).hText, *textH, len);
-    HUnlock((**gTE).hText);
+    HLock((**doc->te).hText);
+    BlockMove(*(**doc->te).hText, *textH, len);
+    HUnlock((**doc->te).hText);
     HUnlock(textH);
 
-    if (gRedoCount == MAX_UNDO_LEVELS) {
-        FreeSnapshot(&gRedoStack[0]);
+    if (doc->redoCount == MAX_UNDO_LEVELS) {
+        FreeSnapshot(&doc->redoStack[0]);
         for (i = 0; i < MAX_UNDO_LEVELS - 1; i++)
-            gRedoStack[i] = gRedoStack[i + 1];
-        gRedoCount--;
+            doc->redoStack[i] = doc->redoStack[i + 1];
+        doc->redoCount--;
     }
 
-    slot = &gRedoStack[gRedoCount++];
+    slot = &doc->redoStack[doc->redoCount++];
     slot->textH = textH;
     slot->length = len;
-    slot->selStart = (**gActiveTE).selStart;
-    slot->selEnd = (**gActiveTE).selEnd;
+    slot->selStart = (**doc->activeTE).selStart;
+    slot->selEnd = (**doc->activeTE).selEnd;
 }
 
-/* Replaces gTE's text with a snapshot and, if Writer mode is active,
-   rebuilds gHiddenTE from it so styling comes back correctly. Doesn't
-   free the snapshot -- the caller (DoUndo/DoRedo) owns that. */
-static void RestoreSnapshot(UndoSnapshot *snap)
+/* Replaces the canonical TE's text with a snapshot and, if Writer mode
+   is active, rebuilds the hidden TE from it so styling comes back
+   correctly. Doesn't free the snapshot -- the caller (DoUndo/DoRedo)
+   owns that. */
+static void RestoreSnapshot(DocumentPtr doc, UndoSnapshot *snap)
 {
     Rect savedViewRect;
 
-    SuppressDrawing(gTE, &savedViewRect);
-    TESetSelect(0, 32767, gTE);
-    TEDelete(gTE);
+    SuppressDrawing(doc->te, &savedViewRect);
+    TESetSelect(0, 32767, doc->te);
+    TEDelete(doc->te);
     HLock(snap->textH);
-    TEInsert(*snap->textH, snap->length, gTE);
+    TEInsert(*snap->textH, snap->length, doc->te);
     HUnlock(snap->textH);
-    RestoreDrawing(gTE, &savedViewRect);
+    RestoreDrawing(doc->te, &savedViewRect);
 
-    if (gHideMarkdown) {
+    if (doc->hideMarkdown) {
         BuildHiddenView();
-        TESetSelect(snap->selStart, snap->selEnd, gHiddenTE);
+        TESetSelect(snap->selStart, snap->selEnd, doc->hiddenTE);
     } else {
         ClearStyles();
-        TESetSelect(snap->selStart, snap->selEnd, gTE);
+        TESetSelect(snap->selStart, snap->selEnd, doc->te);
     }
 
-    gDirty = true;
-    gTypingRunActive = false;
+    doc->dirty = true;
+    doc->typingRunActive = false;
     AdjustScrollbar();
-    InvalRect(&gWindow->portRect);
+    InvalRect(&doc->window->portRect);
 }
 
 void DoUndo(void)
 {
+    DocumentPtr doc = FrontDocument();
     UndoSnapshot snap;
 
-    if (gUndoCount == 0)
+    if (doc->undoCount == 0)
         return;
 
-    PushRedoSnapshot();
+    PushRedoSnapshot(doc);
 
-    gUndoCount--;
-    snap = gUndoStack[gUndoCount];
-    RestoreSnapshot(&snap);
+    doc->undoCount--;
+    snap = doc->undoStack[doc->undoCount];
+    RestoreSnapshot(doc, &snap);
     FreeSnapshot(&snap);
 
     UpdateEditMenuState();
@@ -157,20 +163,21 @@ void DoUndo(void)
 
 void DoRedo(void)
 {
+    DocumentPtr doc = FrontDocument();
     UndoSnapshot snap;
 
-    if (gRedoCount == 0)
+    if (doc->redoCount == 0)
         return;
 
     /* Take the redo entry before pushing onto undo -- PushUndoSnapshot
        unconditionally clears the redo stack (correct for a genuine new
        edit, but redoing isn't one; grab what's needed first). */
-    gRedoCount--;
-    snap = gRedoStack[gRedoCount];
+    doc->redoCount--;
+    snap = doc->redoStack[doc->redoCount];
 
     PushUndoSnapshot();
 
-    RestoreSnapshot(&snap);
+    RestoreSnapshot(doc, &snap);
     FreeSnapshot(&snap);
 
     UpdateEditMenuState();
@@ -178,19 +185,20 @@ void DoRedo(void)
 
 void DoCut(void)
 {
+    DocumentPtr doc = FrontDocument();
     short selStart, selEnd;
     long selLen;
     Handle scrapText;
 
-    selStart = (**gActiveTE).selStart;
-    selEnd = (**gActiveTE).selEnd;
+    selStart = (**doc->activeTE).selStart;
+    selEnd = (**doc->activeTE).selEnd;
     if (selStart == selEnd)
         return;
 
-    if (gHideMarkdown) {
-        scrapText = EncodeSelectionAsMarkdown(selStart, selEnd, gActiveTE);
+    if (doc->hideMarkdown) {
+        scrapText = EncodeSelectionAsMarkdown(selStart, selEnd, doc->activeTE);
     } else {
-        Handle textH = (**gActiveTE).hText;
+        Handle textH = (**doc->activeTE).hText;
 
         selLen = selEnd - selStart;
         scrapText = NewHandle(selLen);
@@ -209,28 +217,29 @@ void DoCut(void)
     HUnlock(scrapText);
     DisposeHandle(scrapText);
 
-    TEDelete(gActiveTE);
+    TEDelete(doc->activeTE);
 
-    gDirty = true;
-    gTypingRunActive = false;
+    doc->dirty = true;
+    doc->typingRunActive = false;
     AdjustScrollbar();
 }
 
 void DoCopy(void)
 {
+    DocumentPtr doc = FrontDocument();
     short selStart, selEnd;
     long selLen;
     Handle scrapText;
 
-    selStart = (**gActiveTE).selStart;
-    selEnd = (**gActiveTE).selEnd;
+    selStart = (**doc->activeTE).selStart;
+    selEnd = (**doc->activeTE).selEnd;
     if (selStart == selEnd)
         return;
 
-    if (gHideMarkdown) {
-        scrapText = EncodeSelectionAsMarkdown(selStart, selEnd, gActiveTE);
+    if (doc->hideMarkdown) {
+        scrapText = EncodeSelectionAsMarkdown(selStart, selEnd, doc->activeTE);
     } else {
-        Handle textH = (**gActiveTE).hText;
+        Handle textH = (**doc->activeTE).hText;
 
         selLen = selEnd - selStart;
         scrapText = NewHandle(selLen);
@@ -250,6 +259,7 @@ void DoCopy(void)
 
 void DoPaste(void)
 {
+    DocumentPtr doc = FrontDocument();
     Handle scrapH;
     long offset;
     long len;
@@ -263,23 +273,25 @@ void DoPaste(void)
 
     PushUndoSnapshot();
 
-    if (gHideMarkdown) {
-        InsertMarkdownAsStyled(scrapH, len, gActiveTE);
+    if (doc->hideMarkdown) {
+        InsertMarkdownAsStyled(scrapH, len, doc->activeTE);
         DisposeHandle(scrapH);
     } else {
         HLock(scrapH);
-        TEInsert(*scrapH, len, gActiveTE);
+        TEInsert(*scrapH, len, doc->activeTE);
         HUnlock(scrapH);
         DisposeHandle(scrapH);
     }
 
-    gDirty = true;
-    gTypingRunActive = false;
+    doc->dirty = true;
+    doc->typingRunActive = false;
     AdjustScrollbar();
 }
 
 void DoSelectAll(void)
 {
-    TESetSelect(0, 32767, gActiveTE);
-    gTypingRunActive = false;
+    DocumentPtr doc = FrontDocument();
+
+    TESetSelect(0, 32767, doc->activeTE);
+    doc->typingRunActive = false;
 }

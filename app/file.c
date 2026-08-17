@@ -1,8 +1,8 @@
 #include "app.h"
 
-static void RefreshActiveView(void)
+static void RefreshActiveView(DocumentPtr doc)
 {
-    if (gHideMarkdown)
+    if (doc->hideMarkdown)
         BuildHiddenView();
     else
         ClearStyles();
@@ -10,35 +10,38 @@ static void RefreshActiveView(void)
 
 void SetViewMode(Boolean hideMarkdown)
 {
-    if (hideMarkdown == gHideMarkdown)
+    DocumentPtr doc = FrontDocument();
+
+    if (hideMarkdown == doc->hideMarkdown)
         return;
 
     ClearUndoRedoStacks();
     UpdateEditMenuState();
-    TEDeactivate(gActiveTE);
+    TEDeactivate(doc->activeTE);
 
     if (hideMarkdown) {
         BuildHiddenView();
-        gActiveTE = gHiddenTE;
+        doc->activeTE = doc->hiddenTE;
     } else {
         SyncHiddenToCanonical();
-        gActiveTE = gTE;
+        doc->activeTE = doc->te;
     }
 
-    TEActivate(gActiveTE);
-    gHideMarkdown = hideMarkdown;
+    TEActivate(doc->activeTE);
+    doc->hideMarkdown = hideMarkdown;
     CheckItem(gViewMenu, iMarkdownView, !hideMarkdown);
     CheckItem(gViewMenu, iWriterView, hideMarkdown);
     UpdateMenuBarLook();
     AdjustScrollbar();
-    InvalRect(&gWindow->portRect);
+    InvalRect(&doc->window->portRect);
 }
 
 static void WriteFile(StringPtr name, short vRefNum)
 {
+    DocumentPtr doc = FrontDocument();
     short refNum;
     long count;
-    Handle textH = (**gTE).hText;
+    Handle textH = (**doc->te).hText;
     OSErr err;
 
     Create(name, vRefNum, 'ArtT', 'TEXT');
@@ -48,7 +51,7 @@ static void WriteFile(StringPtr name, short vRefNum)
         return;
 
     SetEOF(refNum, 0);
-    count = (**gTE).teLength;
+    count = (**doc->te).teLength;
     HLock(textH);
     FSWrite(refNum, &count, *textH);
     HUnlock(textH);
@@ -57,6 +60,7 @@ static void WriteFile(StringPtr name, short vRefNum)
 
 static void ReadFile(StringPtr name, short vRefNum)
 {
+    DocumentPtr doc = FrontDocument();
     short refNum;
     long count;
     long eof;
@@ -74,22 +78,23 @@ static void ReadFile(StringPtr name, short vRefNum)
     FSRead(refNum, &count, *textH);
     FSClose(refNum);
 
-    TESetSelect(0, 32767, gTE);
-    TEDelete(gTE);
-    TEInsert(*textH, count, gTE);
+    TESetSelect(0, 32767, doc->te);
+    TEDelete(doc->te);
+    TEInsert(*textH, count, doc->te);
     HUnlock(textH);
     DisposeHandle(textH);
 
-    gDirty = false;
+    doc->dirty = false;
     ClearUndoRedoStacks();
     UpdateEditMenuState();
-    RefreshActiveView();
+    RefreshActiveView(doc);
     AdjustScrollbar();
-    InvalRect(&gWindow->portRect);
+    InvalRect(&doc->window->portRect);
 }
 
 void DoStartupOpen(void)
 {
+    DocumentPtr doc = FrontDocument();
     short message, count;
     AppFile theFile;
 
@@ -98,19 +103,20 @@ void DoStartupOpen(void)
         return;
 
     GetAppFiles(1, &theFile);
-    BlockMove(theFile.fName, gFileName, theFile.fName[0] + 1);
-    gVRefNum = theFile.vRefNum;
-    gHaveFile = true;
-    ReadFile(gFileName, gVRefNum);
+    BlockMove(theFile.fName, doc->fileName, theFile.fName[0] + 1);
+    doc->vRefNum = theFile.vRefNum;
+    doc->haveFile = true;
+    ReadFile(doc->fileName, doc->vRefNum);
     ClrAppFiles(1);
 }
 
 Boolean DoSaveAs(void)
 {
+    DocumentPtr doc = FrontDocument();
     SFReply reply;
     Point where = {100, 100};
 
-    if (gHideMarkdown)
+    if (doc->hideMarkdown)
         SyncHiddenToCanonical();
 
     SFPutFile(where, "\pSave document as:", "\pUntitled.md", NULL, &reply);
@@ -118,33 +124,36 @@ Boolean DoSaveAs(void)
     if (!reply.good)
         return false;
 
-    BlockMove(reply.fName, gFileName, reply.fName[0] + 1);
-    gVRefNum = reply.vRefNum;
-    gHaveFile = true;
-    WriteFile(gFileName, gVRefNum);
-    gDirty = false;
+    BlockMove(reply.fName, doc->fileName, reply.fName[0] + 1);
+    doc->vRefNum = reply.vRefNum;
+    doc->haveFile = true;
+    WriteFile(doc->fileName, doc->vRefNum);
+    doc->dirty = false;
     return true;
 }
 
 Boolean DoSave(void)
 {
-    if (!gHaveFile)
+    DocumentPtr doc = FrontDocument();
+
+    if (!doc->haveFile)
         return DoSaveAs();
 
-    if (gHideMarkdown)
+    if (doc->hideMarkdown)
         SyncHiddenToCanonical();
 
-    WriteFile(gFileName, gVRefNum);
-    gDirty = false;
+    WriteFile(doc->fileName, doc->vRefNum);
+    doc->dirty = false;
     return true;
 }
 
 static short AskSaveChanges(void)
 {
+    DocumentPtr doc = FrontDocument();
     short hit;
 
-    if (gHaveFile)
-        ParamText(gFileName, "\p", "\p", "\p");
+    if (doc->haveFile)
+        ParamText(doc->fileName, "\p", "\p", "\p");
     else
         ParamText("\pUntitled", "\p", "\p", "\p");
 
@@ -155,7 +164,9 @@ static short AskSaveChanges(void)
 
 Boolean ConfirmDiscardChanges(void)
 {
-    if (!gDirty)
+    DocumentPtr doc = FrontDocument();
+
+    if (!doc->dirty)
         return true;
 
     switch (AskSaveChanges()) {
@@ -167,6 +178,7 @@ Boolean ConfirmDiscardChanges(void)
 
 Boolean DoOpenFile(void)
 {
+    DocumentPtr doc = FrontDocument();
     SFReply reply;
     Point where = {100, 100};
     SFTypeList types;
@@ -178,22 +190,24 @@ Boolean DoOpenFile(void)
     if (!reply.good)
         return false;
 
-    BlockMove(reply.fName, gFileName, reply.fName[0] + 1);
-    gVRefNum = reply.vRefNum;
-    gHaveFile = true;
-    ReadFile(gFileName, gVRefNum);
+    BlockMove(reply.fName, doc->fileName, reply.fName[0] + 1);
+    doc->vRefNum = reply.vRefNum;
+    doc->haveFile = true;
+    ReadFile(doc->fileName, doc->vRefNum);
     return true;
 }
 
 void DoNewFile(void)
 {
-    TESetSelect(0, 32767, gTE);
-    TEDelete(gTE);
-    gHaveFile = false;
-    gDirty = false;
+    DocumentPtr doc = FrontDocument();
+
+    TESetSelect(0, 32767, doc->te);
+    TEDelete(doc->te);
+    doc->haveFile = false;
+    doc->dirty = false;
     ClearUndoRedoStacks();
     UpdateEditMenuState();
-    RefreshActiveView();
+    RefreshActiveView(doc);
     AdjustScrollbar();
-    InvalRect(&gWindow->portRect);
+    InvalRect(&doc->window->portRect);
 }

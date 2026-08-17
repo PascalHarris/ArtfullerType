@@ -2,11 +2,13 @@
 
 short AddLinkURL(const unsigned char *url)
 {
-    if (gLinkCount >= MAX_LINKS)
+    DocumentPtr doc = FrontDocument();
+
+    if (doc->linkCount >= MAX_LINKS)
         return 0;
-    gLinkCount++;
-    BlockMove((Ptr) url, (Ptr) gLinkURLs[gLinkCount], url[0] + 1);
-    return gLinkCount;
+    doc->linkCount++;
+    BlockMove((Ptr) url, (Ptr) doc->linkURLs[doc->linkCount], url[0] + 1);
+    return doc->linkCount;
 }
 
 /*
@@ -17,10 +19,11 @@ short AddLinkURL(const unsigned char *url)
 */
 void ClearStyles(void)
 {
+    DocumentPtr doc = FrontDocument();
     TextStyle ts;
     short fontNum;
-    short savedStart = (**gTE).selStart;
-    short savedEnd = (**gTE).selEnd;
+    short savedStart = (**doc->te).selStart;
+    short savedEnd = (**doc->te).selEnd;
 
     GetFNum("\pTimes", &fontNum);
     ts.tsFont = fontNum;
@@ -28,10 +31,10 @@ void ClearStyles(void)
     ts.tsSize = CurrentFontSize();
     ts.tsColor.red = ts.tsColor.green = ts.tsColor.blue = 0;
 
-    TESetSelect(0, 32767, gTE);
-    TESetStyle(doFont + doFace + doSize + doColor, &ts, true, gTE);
+    TESetSelect(0, 32767, doc->te);
+    TESetStyle(doFont + doFace + doSize + doColor, &ts, true, doc->te);
 
-    TESetSelect(savedStart, savedEnd, gTE);
+    TESetSelect(savedStart, savedEnd, doc->te);
 }
 
 typedef struct {
@@ -40,18 +43,19 @@ typedef struct {
 } StyleOp;
 
 /*
-    Builds gHiddenTE from gTE's canonical markdown text, stripping the
-    delimiter characters themselves (**, *, `, [](), leading #s) and
-    recording where the surviving text landed so styling can be applied
-    afterward, in the stripped buffer's own coordinates.
+    Builds the hidden (Writer-mode) TE from the canonical TE's markdown
+    text, stripping the delimiter characters themselves (**, *, `, [](),
+    leading #s) and recording where the surviving text landed so styling
+    can be applied afterward, in the stripped buffer's own coordinates.
 */
 /*
-    gTE and gHiddenTE are both bound to gWindow (a TE record draws into
-    whatever GrafPort was current at TEStyleNew time, for its whole
-    lifetime, regardless of which one is "active" later) -- so editing
-    the *inactive* record still paints onto the window. Moving its
-    viewRect off-screen for the duration of a rebuild makes those calls
-    draw nothing, since drawing is clipped to viewRect every time.
+    A document's te and hiddenTE are both bound to its window (a TE
+    record draws into whatever GrafPort was current at TEStyleNew time,
+    for its whole lifetime, regardless of which one is "active" later)
+    -- so editing the *inactive* record still paints onto the window.
+    Moving its viewRect off-screen for the duration of a rebuild makes
+    those calls draw nothing, since drawing is clipped to viewRect
+    every time.
 */
 #define OFFSCREEN_COORD (-32000)
 
@@ -69,6 +73,7 @@ void RestoreDrawing(TEHandle te, Rect *saved)
 
 void BuildHiddenView(void)
 {
+    DocumentPtr doc = FrontDocument();
     Handle srcH;
     long len;
     Handle outH;
@@ -90,9 +95,9 @@ void BuildHiddenView(void)
     SetCursor(*GetCursor(watchCursor));
 
     opCount = 0;
-    gLinkCount = 0;
-    srcH = (**gTE).hText;
-    len = (**gTE).teLength;
+    doc->linkCount = 0;
+    srcH = (**doc->te).hText;
+    len = (**doc->te).teLength;
     outH = NewHandle(len + 1);
     outLen = 0;
 
@@ -227,11 +232,11 @@ void BuildHiddenView(void)
     HUnlock(srcH);
     HUnlock(outH);
 
-    SuppressDrawing(gHiddenTE, &savedViewRect);
+    SuppressDrawing(doc->hiddenTE, &savedViewRect);
 
-    TESetSelect(0, 32767, gHiddenTE);
-    TEDelete(gHiddenTE);
-    TEInsert(*outH, outLen, gHiddenTE);
+    TESetSelect(0, 32767, doc->hiddenTE);
+    TEDelete(doc->hiddenTE);
+    TEInsert(*outH, outLen, doc->hiddenTE);
     DisposeHandle(outH);
 
     GetFNum("\pTimes", &fontNum);
@@ -239,58 +244,60 @@ void BuildHiddenView(void)
     ts.tsFace = normal;
     ts.tsSize = CurrentFontSize();
     ts.tsColor.red = ts.tsColor.green = ts.tsColor.blue = 0;
-    TESetSelect(0, 32767, gHiddenTE);
-    TESetStyle(doFont + doFace + doSize + doColor, &ts, true, gHiddenTE);
+    TESetSelect(0, 32767, doc->hiddenTE);
+    TESetStyle(doFont + doFace + doSize + doColor, &ts, true, doc->hiddenTE);
 
     for (k = 0; k < opCount; k++) {
         TextStyle opStyle;
 
-        TESetSelect(ops[k].start, ops[k].end, gHiddenTE);
+        TESetSelect(ops[k].start, ops[k].end, doc->hiddenTE);
         switch (ops[k].kind) {
             case 'B':
                 opStyle.tsFace = bold;
-                TESetStyle(doFace, &opStyle, true, gHiddenTE);
+                TESetStyle(doFace, &opStyle, true, doc->hiddenTE);
                 break;
             case 'I':
                 opStyle.tsFace = italic;
-                TESetStyle(doFace, &opStyle, true, gHiddenTE);
+                TESetStyle(doFace, &opStyle, true, doc->hiddenTE);
                 break;
             case 'C':
                 GetFNum("\pMonaco", &opStyle.tsFont);
-                TESetStyle(doFont, &opStyle, true, gHiddenTE);
+                TESetStyle(doFont, &opStyle, true, doc->hiddenTE);
                 break;
             case 'L':
                 opStyle.tsFace = underline;
                 opStyle.tsColor.red = ops[k].linkID;
                 opStyle.tsColor.green = 0;
                 opStyle.tsColor.blue = 0;
-                TESetStyle(doFace + doColor, &opStyle, true, gHiddenTE);
+                TESetStyle(doFace + doColor, &opStyle, true, doc->hiddenTE);
                 break;
             case 'H':
                 opStyle.tsFace = bold;
                 opStyle.tsSize = CurrentFontSize() + (4 - ops[k].level) * 4;
-                TESetStyle(doFace + doSize, &opStyle, true, gHiddenTE);
+                TESetStyle(doFace + doSize, &opStyle, true, doc->hiddenTE);
                 break;
         }
     }
 
-    TESetSelect(0, 0, gHiddenTE);
+    TESetSelect(0, 0, doc->hiddenTE);
 
-    RestoreDrawing(gHiddenTE, &savedViewRect);
+    RestoreDrawing(doc->hiddenTE, &savedViewRect);
 
     InitCursor();
 }
 
 /*
-    Reverse direction: walks gHiddenTE's text + style runs and re-derives
-    markdown delimiters, rebuilding gTE's canonical text from scratch.
-    Headings are detected per-line (bold + a heading-sized run at the
-    line's start); everything else is inline bold/italic/Monaco-as-code.
-    Link underlines round-trip as "[text](url)" -- the url comes from
-    gLinkURLs, keyed by the run's tsColor.red (see AddLinkURL above).
+    Reverse direction: walks the hidden TE's text + style runs and
+    re-derives markdown delimiters, rebuilding the canonical TE's text
+    from scratch. Headings are detected per-line (bold + a heading-sized
+    run at the line's start); everything else is inline bold/italic/
+    Monaco-as-code. Link underlines round-trip as "[text](url)" -- the
+    url comes from the document's linkURLs, keyed by the run's
+    tsColor.red (see AddLinkURL above).
 */
 void SyncHiddenToCanonical(void)
 {
+    DocumentPtr doc = FrontDocument();
     Handle srcH;
     long len;
     Handle outH;
@@ -309,11 +316,11 @@ void SyncHiddenToCanonical(void)
        pause noticeably mid-typing too. */
     SetCursor(*GetCursor(watchCursor));
 
-    srcH = (**gHiddenTE).hText;
-    len = (**gHiddenTE).teLength;
+    srcH = (**doc->hiddenTE).hText;
+    len = (**doc->hiddenTE).teLength;
     urlSpace = 0;
-    for (li = 1; li <= gLinkCount; li++)
-        urlSpace += gLinkURLs[li][0];
+    for (li = 1; li <= doc->linkCount; li++)
+        urlSpace += doc->linkURLs[li][0];
     outCap = len * 2 + 64 + urlSpace;
     outH = NewHandle(outCap);
     outLen = 0;
@@ -336,7 +343,7 @@ void SyncHiddenToCanonical(void)
             TextStyle firstStyle;
             short dummyLH, dummyFA;
 
-            TEGetStyle((short) lineStart, &firstStyle, &dummyLH, &dummyFA, gHiddenTE);
+            TEGetStyle((short) lineStart, &firstStyle, &dummyLH, &dummyFA, doc->hiddenTE);
             if (firstStyle.tsFace & bold) {
                 short lvl;
 
@@ -371,7 +378,7 @@ void SyncHiddenToCanonical(void)
                     TextStyle st;
                     short dlh, dfa;
 
-                    TEGetStyle((short) i, &st, &dlh, &dfa, gHiddenTE);
+                    TEGetStyle((short) i, &st, &dlh, &dfa, doc->hiddenTE);
                     wantBold = (st.tsFace & bold) != 0;
                     wantItalic = (st.tsFace & italic) != 0;
                     wantCode = (st.tsFont == monacoFont);
@@ -400,8 +407,8 @@ void SyncHiddenToCanonical(void)
                 if (!inLink && wantLink) {
                     (*outH)[outLen++] = '[';
                     inLink = true;
-                    if (linkID >= 1 && linkID <= gLinkCount)
-                        BlockMove(gLinkURLs[linkID], curLinkURL, gLinkURLs[linkID][0] + 1);
+                    if (linkID >= 1 && linkID <= doc->linkCount)
+                        BlockMove(doc->linkURLs[linkID], curLinkURL, doc->linkURLs[linkID][0] + 1);
                     else
                         curLinkURL[0] = 0;
                 }
@@ -427,16 +434,16 @@ void SyncHiddenToCanonical(void)
     HUnlock(srcH);
     HUnlock(outH);
 
-    SuppressDrawing(gTE, &savedViewRect);
+    SuppressDrawing(doc->te, &savedViewRect);
 
-    TESetSelect(0, 32767, gTE);
-    TEDelete(gTE);
-    TEInsert(*outH, outLen, gTE);
+    TESetSelect(0, 32767, doc->te);
+    TEDelete(doc->te);
+    TEInsert(*outH, outLen, doc->te);
     DisposeHandle(outH);
 
     ClearStyles();
 
-    RestoreDrawing(gTE, &savedViewRect);
+    RestoreDrawing(doc->te, &savedViewRect);
 
     InitCursor();
 }
@@ -469,6 +476,7 @@ void SyncHiddenToCanonical(void)
 */
 Handle EncodeSelectionAsMarkdown(short start, short end, TEHandle te)
 {
+    DocumentPtr doc = FrontDocument();
     Handle srcH;
     Handle outH;
     long outCap;
@@ -482,8 +490,8 @@ Handle EncodeSelectionAsMarkdown(short start, short end, TEHandle te)
 
     srcH = (**te).hText;
     urlSpace = 0;
-    for (li = 1; li <= gLinkCount; li++)
-        urlSpace += gLinkURLs[li][0];
+    for (li = 1; li <= doc->linkCount; li++)
+        urlSpace += doc->linkURLs[li][0];
     outCap = (long) (end - start) * 2 + 64 + urlSpace;
     outH = NewHandle(outCap);
     outLen = 0;
@@ -529,8 +537,8 @@ Handle EncodeSelectionAsMarkdown(short start, short end, TEHandle te)
         if (!inLink && wantLink) {
             (*outH)[outLen++] = '[';
             inLink = true;
-            if (linkID >= 1 && linkID <= gLinkCount)
-                BlockMove(gLinkURLs[linkID], curLinkURL, gLinkURLs[linkID][0] + 1);
+            if (linkID >= 1 && linkID <= doc->linkCount)
+                BlockMove(doc->linkURLs[linkID], curLinkURL, doc->linkURLs[linkID][0] + 1);
             else
                 curLinkURL[0] = 0;
         }
@@ -722,6 +730,7 @@ void InsertMarkdownAsStyled(Handle srcH, long srcLen, TEHandle te)
 
 void WrapSelection(char *prefix, char *suffix)
 {
+    DocumentPtr doc = FrontDocument();
     short selStart, selEnd;
     long selLen, totalLen, textLen;
     short prefixLen, suffixLen;
@@ -729,13 +738,13 @@ void WrapSelection(char *prefix, char *suffix)
     Handle newH;
     Boolean outerWrapped, innerWrapped;
 
-    selStart = (**gTE).selStart;
-    selEnd = (**gTE).selEnd;
+    selStart = (**doc->te).selStart;
+    selEnd = (**doc->te).selEnd;
     selLen = selEnd - selStart;
-    textH = (**gTE).hText;
-    textLen = (**gTE).teLength;
+    textH = (**doc->te).hText;
+    textLen = (**doc->te).teLength;
 
-    gDirty = true;
+    doc->dirty = true;
 
     prefixLen = strlen(prefix);
     suffixLen = strlen(suffix);
@@ -760,13 +769,13 @@ void WrapSelection(char *prefix, char *suffix)
         BlockMove(*textH + selStart, *newH, selLen);
         HUnlock(textH);
 
-        TESetSelect(selStart - prefixLen, selEnd + suffixLen, gTE);
-        TEDelete(gTE);
-        TEInsert(*newH, selLen, gTE);
+        TESetSelect(selStart - prefixLen, selEnd + suffixLen, doc->te);
+        TEDelete(doc->te);
+        TEInsert(*newH, selLen, doc->te);
         HUnlock(newH);
         DisposeHandle(newH);
 
-        TESetSelect(selStart - prefixLen, selStart - prefixLen + selLen, gTE);
+        TESetSelect(selStart - prefixLen, selStart - prefixLen + selLen, doc->te);
         return;
     }
 
@@ -780,12 +789,12 @@ void WrapSelection(char *prefix, char *suffix)
         BlockMove(*textH + selStart + prefixLen, *newH, innerLen);
         HUnlock(textH);
 
-        TEDelete(gTE);
-        TEInsert(*newH, innerLen, gTE);
+        TEDelete(doc->te);
+        TEInsert(*newH, innerLen, doc->te);
         HUnlock(newH);
         DisposeHandle(newH);
 
-        TESetSelect(selStart, selStart + innerLen, gTE);
+        TESetSelect(selStart, selStart + innerLen, doc->te);
         return;
     }
 
@@ -798,16 +807,17 @@ void WrapSelection(char *prefix, char *suffix)
     BlockMove(suffix, *newH + prefixLen + selLen, suffixLen);
     HUnlock(textH);
 
-    TEDelete(gTE);
-    TEInsert(*newH, totalLen, gTE);
+    TEDelete(doc->te);
+    TEInsert(*newH, totalLen, doc->te);
     HUnlock(newH);
     DisposeHandle(newH);
 
-    TESetSelect(selStart + prefixLen, selStart + prefixLen + selLen, gTE);
+    TESetSelect(selStart + prefixLen, selStart + prefixLen + selLen, doc->te);
 }
 
 void ApplyHeading(short level)
 {
+    DocumentPtr doc = FrontDocument();
     short selStart;
     short lineStart;
     long textLen;
@@ -816,11 +826,11 @@ void ApplyHeading(short level)
     short i;
     Boolean alreadyHeading;
 
-    gDirty = true;
+    doc->dirty = true;
 
-    selStart = (**gTE).selStart;
-    textH = (**gTE).hText;
-    textLen = (**gTE).teLength;
+    selStart = (**doc->te).selStart;
+    textH = (**doc->te).hText;
+    textLen = (**doc->te).teLength;
 
     lineStart = selStart;
     HLock(textH);
@@ -839,17 +849,18 @@ void ApplyHeading(short level)
     HUnlock(textH);
 
     if (alreadyHeading) {
-        TESetSelect(lineStart, lineStart + level + 1, gTE);
-        TEDelete(gTE);
+        TESetSelect(lineStart, lineStart + level + 1, doc->te);
+        TEDelete(doc->te);
         return;
     }
 
-    TESetSelect(lineStart, lineStart, gTE);
-    TEInsert(prefix, level + 1, gTE);
+    TESetSelect(lineStart, lineStart, doc->te);
+    TEInsert(prefix, level + 1, doc->te);
 }
 
 void DoLink(void)
 {
+    DocumentPtr doc = FrontDocument();
     short selStart, selEnd;
     long selLen, totalLen;
     Handle textH;
@@ -858,12 +869,12 @@ void DoLink(void)
     short midLen = 3;
     short cursorPos;
 
-    gDirty = true;
+    doc->dirty = true;
 
-    selStart = (**gTE).selStart;
-    selEnd = (**gTE).selEnd;
+    selStart = (**doc->te).selStart;
+    selEnd = (**doc->te).selEnd;
     selLen = selEnd - selStart;
-    textH = (**gTE).hText;
+    textH = (**doc->te).hText;
 
     totalLen = 1 + selLen + midLen;
     newH = NewHandle(totalLen);
@@ -874,41 +885,44 @@ void DoLink(void)
     BlockMove(mid, *newH + 1 + selLen, midLen);
     HUnlock(textH);
 
-    TEDelete(gTE);
-    TEInsert(*newH, totalLen, gTE);
+    TEDelete(doc->te);
+    TEInsert(*newH, totalLen, doc->te);
     HUnlock(newH);
     DisposeHandle(newH);
 
     cursorPos = selStart + selLen + 3;
-    TESetSelect(cursorPos, cursorPos, gTE);
+    TESetSelect(cursorPos, cursorPos, doc->te);
 }
 
 /*
     Style commands while in Hide Markdown mode apply real TextStyle
-    directly to gHiddenTE instead of inserting delimiter text -- there's
-    no visible syntax to insert. Toggle state is read back from the
-    style at the selection start.
+    directly to the hidden TE instead of inserting delimiter text --
+    there's no visible syntax to insert. Toggle state is read back from
+    the style at the selection start.
 */
 static Boolean SelectionHasFace(Style face)
 {
+    DocumentPtr doc = FrontDocument();
     TextStyle ts;
     short lh, fa;
 
-    TEGetStyle((**gHiddenTE).selStart, &ts, &lh, &fa, gHiddenTE);
+    TEGetStyle((**doc->hiddenTE).selStart, &ts, &lh, &fa, doc->hiddenTE);
     return (ts.tsFace & face) != 0;
 }
 
 void ToggleFace(Style face)
 {
+    DocumentPtr doc = FrontDocument();
     TextStyle ts;
 
     ts.tsFace = SelectionHasFace(face) ? normal : face;
-    TESetStyle(doFace, &ts, true, gHiddenTE);
+    TESetStyle(doFace, &ts, true, doc->hiddenTE);
 }
 
 /* Prompts for a URL; returns true and fills in `url` if OK was clicked. */
 static Boolean ShowLinkURLDialog(unsigned char *url)
 {
+    DocumentPtr doc = FrontDocument();
     DialogPtr dlg;
     short item;
     DialogItemType type;
@@ -933,7 +947,7 @@ static Boolean ShowLinkURLDialog(unsigned char *url)
     }
 
     DisposeDialog(dlg);
-    SetPort(gWindow);
+    SetPort(doc->window);
     UpdateMenuBarLook();
     return result;
 }
@@ -944,9 +958,10 @@ static Boolean ShowLinkURLDialog(unsigned char *url)
 */
 void DoLinkHidden(void)
 {
+    DocumentPtr doc = FrontDocument();
     Str255 url;
 
-    if ((**gHiddenTE).selStart == (**gHiddenTE).selEnd)
+    if ((**doc->hiddenTE).selStart == (**doc->hiddenTE).selEnd)
         return;
 
     if (ShowLinkURLDialog(url)) {
@@ -956,12 +971,13 @@ void DoLinkHidden(void)
         ts.tsColor.red = AddLinkURL(url);
         ts.tsColor.green = 0;
         ts.tsColor.blue = 0;
-        TESetStyle(doFace + doColor, &ts, true, gHiddenTE);
+        TESetStyle(doFace + doColor, &ts, true, doc->hiddenTE);
     }
 }
 
 void ToggleCode(void)
 {
+    DocumentPtr doc = FrontDocument();
     TextStyle ts;
     short lh, fa;
     short monacoFont, timesFont;
@@ -969,13 +985,14 @@ void ToggleCode(void)
     GetFNum("\pMonaco", &monacoFont);
     GetFNum("\pTimes", &timesFont);
 
-    TEGetStyle((**gHiddenTE).selStart, &ts, &lh, &fa, gHiddenTE);
+    TEGetStyle((**doc->hiddenTE).selStart, &ts, &lh, &fa, doc->hiddenTE);
     ts.tsFont = (ts.tsFont == monacoFont) ? timesFont : monacoFont;
-    TESetStyle(doFont, &ts, true, gHiddenTE);
+    TESetStyle(doFont, &ts, true, doc->hiddenTE);
 }
 
 void ToggleHeadingHidden(short level)
 {
+    DocumentPtr doc = FrontDocument();
     short selStart;
     long lineStart, lineEnd;
     Handle textH;
@@ -984,9 +1001,9 @@ void ToggleHeadingHidden(short level)
     short lh, fa;
     Boolean isThisLevel;
 
-    selStart = (**gHiddenTE).selStart;
-    textH = (**gHiddenTE).hText;
-    len = (**gHiddenTE).teLength;
+    selStart = (**doc->hiddenTE).selStart;
+    textH = (**doc->hiddenTE).hText;
+    len = (**doc->hiddenTE).teLength;
 
     HLock(textH);
     lineStart = selStart;
@@ -997,10 +1014,10 @@ void ToggleHeadingHidden(short level)
         lineEnd++;
     HUnlock(textH);
 
-    TEGetStyle((short) lineStart, &ts, &lh, &fa, gHiddenTE);
+    TEGetStyle((short) lineStart, &ts, &lh, &fa, doc->hiddenTE);
     isThisLevel = (ts.tsFace & bold) && (ts.tsSize == CurrentFontSize() + (4 - level) * 4);
 
-    TESetSelect((short) lineStart, (short) lineEnd, gHiddenTE);
+    TESetSelect((short) lineStart, (short) lineEnd, doc->hiddenTE);
     if (isThisLevel) {
         ts.tsFace = normal;
         ts.tsSize = CurrentFontSize();
@@ -1008,7 +1025,7 @@ void ToggleHeadingHidden(short level)
         ts.tsFace = bold;
         ts.tsSize = CurrentFontSize() + (4 - level) * 4;
     }
-    TESetStyle(doFace + doSize, &ts, true, gHiddenTE);
+    TESetStyle(doFace + doSize, &ts, true, doc->hiddenTE);
 }
 
 /*
@@ -1019,6 +1036,7 @@ void ToggleHeadingHidden(short level)
 */
 static void SetTypingStyleNormal(short pos)
 {
+    DocumentPtr doc = FrontDocument();
     TextStyle ts;
     short fontNum;
 
@@ -1026,8 +1044,8 @@ static void SetTypingStyleNormal(short pos)
     ts.tsFont = fontNum;
     ts.tsFace = normal;
     ts.tsSize = CurrentFontSize();
-    TESetSelect(pos, pos, gHiddenTE);
-    TESetStyle(doFont + doFace + doSize, &ts, true, gHiddenTE);
+    TESetSelect(pos, pos, doc->hiddenTE);
+    TESetStyle(doFont + doFace + doSize, &ts, true, doc->hiddenTE);
 }
 
 /*
@@ -1040,6 +1058,7 @@ static void SetTypingStyleNormal(short pos)
 */
 void DetectInlineMarkdown(char justTyped)
 {
+    DocumentPtr doc = FrontDocument();
     Handle textH;
     long len;
     long caret;
@@ -1047,13 +1066,13 @@ void DetectInlineMarkdown(char justTyped)
     long lineEnd;
 
     if (justTyped == '\r') {
-        SetTypingStyleNormal((**gHiddenTE).selEnd);
+        SetTypingStyleNormal((**doc->hiddenTE).selEnd);
         return;
     }
 
-    textH = (**gHiddenTE).hText;
-    len = (**gHiddenTE).teLength;
-    caret = (**gHiddenTE).selEnd;
+    textH = (**doc->hiddenTE).hText;
+    len = (**doc->hiddenTE).teLength;
+    caret = (**doc->hiddenTE).selEnd;
 
     HLock(textH);
 
@@ -1077,12 +1096,12 @@ void DetectInlineMarkdown(char justTyped)
             TextStyle ts;
 
             HUnlock(textH);
-            TESetSelect((short) lineStart, (short) caret, gHiddenTE);
-            TEDelete(gHiddenTE);
-            TESetSelect((short) lineStart, (short) lineStart, gHiddenTE);
+            TESetSelect((short) lineStart, (short) caret, doc->hiddenTE);
+            TEDelete(doc->hiddenTE);
+            TESetSelect((short) lineStart, (short) lineStart, doc->hiddenTE);
             ts.tsFace = bold;
             ts.tsSize = CurrentFontSize() + (4 - level) * 4;
-            TESetStyle(doFace + doSize, &ts, true, gHiddenTE);
+            TESetStyle(doFace + doSize, &ts, true, doc->hiddenTE);
             InvalidateHeightCache();
             return;
         }
@@ -1097,14 +1116,14 @@ void DetectInlineMarkdown(char justTyped)
                     TextStyle ts;
 
                     HUnlock(textH);
-                    TESetSelect((short) innerEnd, (short) caret, gHiddenTE);
-                    TEDelete(gHiddenTE);
-                    TESetSelect((short) p, (short) innerStart, gHiddenTE);
-                    TEDelete(gHiddenTE);
+                    TESetSelect((short) innerEnd, (short) caret, doc->hiddenTE);
+                    TEDelete(doc->hiddenTE);
+                    TESetSelect((short) p, (short) innerStart, doc->hiddenTE);
+                    TEDelete(doc->hiddenTE);
 
                     ts.tsFace = bold;
-                    TESetSelect((short) p, (short) (innerEnd - 2), gHiddenTE);
-                    TESetStyle(doFace, &ts, true, gHiddenTE);
+                    TESetSelect((short) p, (short) (innerEnd - 2), doc->hiddenTE);
+                    TESetStyle(doFace, &ts, true, doc->hiddenTE);
                     SetTypingStyleNormal((short) (innerEnd - 2));
                     InvalidateHeightCache();
                     return;
@@ -1125,14 +1144,14 @@ void DetectInlineMarkdown(char justTyped)
                         TextStyle ts;
 
                         HUnlock(textH);
-                        TESetSelect((short) innerEnd, (short) (innerEnd + 2), gHiddenTE);
-                        TEDelete(gHiddenTE);
-                        TESetSelect((short) (caret - 2), (short) caret, gHiddenTE);
-                        TEDelete(gHiddenTE);
+                        TESetSelect((short) innerEnd, (short) (innerEnd + 2), doc->hiddenTE);
+                        TEDelete(doc->hiddenTE);
+                        TESetSelect((short) (caret - 2), (short) caret, doc->hiddenTE);
+                        TEDelete(doc->hiddenTE);
 
                         ts.tsFace = bold;
-                        TESetSelect((short) (caret - 2), (short) (innerEnd - 2), gHiddenTE);
-                        TESetStyle(doFace, &ts, true, gHiddenTE);
+                        TESetSelect((short) (caret - 2), (short) (innerEnd - 2), doc->hiddenTE);
+                        TESetStyle(doFace, &ts, true, doc->hiddenTE);
                         SetTypingStyleNormal((short) (caret - 2));
                         InvalidateHeightCache();
                         return;
@@ -1152,14 +1171,14 @@ void DetectInlineMarkdown(char justTyped)
                     TextStyle ts;
 
                     HUnlock(textH);
-                    TESetSelect((short) innerEnd, (short) caret, gHiddenTE);
-                    TEDelete(gHiddenTE);
-                    TESetSelect((short) p, (short) innerStart, gHiddenTE);
-                    TEDelete(gHiddenTE);
+                    TESetSelect((short) innerEnd, (short) caret, doc->hiddenTE);
+                    TEDelete(doc->hiddenTE);
+                    TESetSelect((short) p, (short) innerStart, doc->hiddenTE);
+                    TEDelete(doc->hiddenTE);
 
                     ts.tsFace = italic;
-                    TESetSelect((short) p, (short) (innerEnd - 1), gHiddenTE);
-                    TESetStyle(doFace, &ts, true, gHiddenTE);
+                    TESetSelect((short) p, (short) (innerEnd - 1), doc->hiddenTE);
+                    TESetStyle(doFace, &ts, true, doc->hiddenTE);
                     SetTypingStyleNormal((short) (innerEnd - 1));
                     InvalidateHeightCache();
                     return;
@@ -1182,14 +1201,14 @@ void DetectInlineMarkdown(char justTyped)
                         TextStyle ts;
 
                         HUnlock(textH);
-                        TESetSelect((short) innerEnd, (short) (innerEnd + 1), gHiddenTE);
-                        TEDelete(gHiddenTE);
-                        TESetSelect((short) (caret - 1), (short) caret, gHiddenTE);
-                        TEDelete(gHiddenTE);
+                        TESetSelect((short) innerEnd, (short) (innerEnd + 1), doc->hiddenTE);
+                        TEDelete(doc->hiddenTE);
+                        TESetSelect((short) (caret - 1), (short) caret, doc->hiddenTE);
+                        TEDelete(doc->hiddenTE);
 
                         ts.tsFace = italic;
-                        TESetSelect((short) (caret - 1), (short) (innerEnd - 1), gHiddenTE);
-                        TESetStyle(doFace, &ts, true, gHiddenTE);
+                        TESetSelect((short) (caret - 1), (short) (innerEnd - 1), doc->hiddenTE);
+                        TESetStyle(doFace, &ts, true, doc->hiddenTE);
                         SetTypingStyleNormal((short) (caret - 1));
                         InvalidateHeightCache();
                         return;
@@ -1208,14 +1227,14 @@ void DetectInlineMarkdown(char justTyped)
                 TextStyle ts;
 
                 HUnlock(textH);
-                TESetSelect((short) innerEnd, (short) caret, gHiddenTE);
-                TEDelete(gHiddenTE);
-                TESetSelect((short) p, (short) innerStart, gHiddenTE);
-                TEDelete(gHiddenTE);
+                TESetSelect((short) innerEnd, (short) caret, doc->hiddenTE);
+                TEDelete(doc->hiddenTE);
+                TESetSelect((short) p, (short) innerStart, doc->hiddenTE);
+                TEDelete(doc->hiddenTE);
 
                 GetFNum("\pMonaco", &ts.tsFont);
-                TESetSelect((short) p, (short) (innerEnd - 1), gHiddenTE);
-                TESetStyle(doFont, &ts, true, gHiddenTE);
+                TESetSelect((short) p, (short) (innerEnd - 1), doc->hiddenTE);
+                TESetStyle(doFont, &ts, true, doc->hiddenTE);
                 SetTypingStyleNormal((short) (innerEnd - 1));
                 InvalidateHeightCache();
                 return;
@@ -1235,14 +1254,14 @@ void DetectInlineMarkdown(char justTyped)
                     TextStyle ts;
 
                     HUnlock(textH);
-                    TESetSelect((short) innerEnd, (short) (innerEnd + 1), gHiddenTE);
-                    TEDelete(gHiddenTE);
-                    TESetSelect((short) (caret - 1), (short) caret, gHiddenTE);
-                    TEDelete(gHiddenTE);
+                    TESetSelect((short) innerEnd, (short) (innerEnd + 1), doc->hiddenTE);
+                    TEDelete(doc->hiddenTE);
+                    TESetSelect((short) (caret - 1), (short) caret, doc->hiddenTE);
+                    TEDelete(doc->hiddenTE);
 
                     GetFNum("\pMonaco", &ts.tsFont);
-                    TESetSelect((short) (caret - 1), (short) (innerEnd - 1), gHiddenTE);
-                    TESetStyle(doFont, &ts, true, gHiddenTE);
+                    TESetSelect((short) (caret - 1), (short) (innerEnd - 1), doc->hiddenTE);
+                    TESetStyle(doFont, &ts, true, doc->hiddenTE);
                     SetTypingStyleNormal((short) (caret - 1));
                     InvalidateHeightCache();
                     return;
@@ -1280,10 +1299,10 @@ void DetectInlineMarkdown(char justTyped)
 
                 HUnlock(textH);
 
-                TESetSelect((short) closeBracketPos, (short) caret, gHiddenTE);
-                TEDelete(gHiddenTE);
-                TESetSelect((short) openBracketPos, (short) (openBracketPos + 1), gHiddenTE);
-                TEDelete(gHiddenTE);
+                TESetSelect((short) closeBracketPos, (short) caret, doc->hiddenTE);
+                TEDelete(doc->hiddenTE);
+                TESetSelect((short) openBracketPos, (short) (openBracketPos + 1), doc->hiddenTE);
+                TEDelete(doc->hiddenTE);
 
                 linkID = AddLinkURL(url);
 
@@ -1291,8 +1310,8 @@ void DetectInlineMarkdown(char justTyped)
                 ts.tsColor.red = linkID;
                 ts.tsColor.green = 0;
                 ts.tsColor.blue = 0;
-                TESetSelect((short) openBracketPos, (short) (closeBracketPos - 1), gHiddenTE);
-                TESetStyle(doFace + doColor, &ts, true, gHiddenTE);
+                TESetSelect((short) openBracketPos, (short) (closeBracketPos - 1), doc->hiddenTE);
+                TESetStyle(doFace + doColor, &ts, true, doc->hiddenTE);
                 SetTypingStyleNormal((short) (closeBracketPos - 1));
                 InvalidateHeightCache();
                 return;
@@ -1306,10 +1325,11 @@ void DetectInlineMarkdown(char justTyped)
 /* "None" in Writer mode: just clear the applied style on the selection. */
 void ClearSelectionStyleHidden(void)
 {
+    DocumentPtr doc = FrontDocument();
     TextStyle ts;
     short fontNum;
 
-    if ((**gHiddenTE).selStart == (**gHiddenTE).selEnd)
+    if ((**doc->hiddenTE).selStart == (**doc->hiddenTE).selEnd)
         return;
 
     GetFNum("\pTimes", &fontNum);
@@ -1317,7 +1337,7 @@ void ClearSelectionStyleHidden(void)
     ts.tsFace = normal;
     ts.tsSize = CurrentFontSize();
     ts.tsColor.red = ts.tsColor.green = ts.tsColor.blue = 0;
-    TESetStyle(doFont + doFace + doSize + doColor, &ts, true, gHiddenTE);
+    TESetStyle(doFont + doFace + doSize + doColor, &ts, true, doc->hiddenTE);
 }
 
 /*
@@ -1329,18 +1349,19 @@ void ClearSelectionStyleHidden(void)
 */
 void ClearMarkdownInSelection(void)
 {
+    DocumentPtr doc = FrontDocument();
     Handle textH;
     short selStart, selEnd;
     Handle outH;
     long outLen;
     long i;
 
-    selStart = (**gTE).selStart;
-    selEnd = (**gTE).selEnd;
+    selStart = (**doc->te).selStart;
+    selEnd = (**doc->te).selEnd;
     if (selStart == selEnd)
         return;
 
-    textH = (**gTE).hText;
+    textH = (**doc->te).hText;
     outH = NewHandle(selEnd - selStart + 1);
     outLen = 0;
 
@@ -1433,10 +1454,10 @@ void ClearMarkdownInSelection(void)
     HUnlock(textH);
     HUnlock(outH);
 
-    TESetSelect(selStart, selEnd, gTE);
-    TEDelete(gTE);
-    TEInsert(*outH, outLen, gTE);
+    TESetSelect(selStart, selEnd, doc->te);
+    TEDelete(doc->te);
+    TEInsert(*outH, outLen, doc->te);
     DisposeHandle(outH);
 
-    TESetSelect(selStart, (short) (selStart + outLen), gTE);
+    TESetSelect(selStart, (short) (selStart + outLen), doc->te);
 }

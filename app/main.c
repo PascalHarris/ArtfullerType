@@ -4,34 +4,23 @@
     Save/Open backed by the classic File Manager. Saving straight to
     the BlueSCSI SD card (bypassing this disk's HFS volume) is a
     later milestone -- this still saves onto the boot disk itself.
+
+    MULTI_WINDOW_DESIGN.md Milestone 1: gWindow/gTE/gHiddenTE/
+    gActiveTE/gScrollBar/gScrollBarVisible/gHaveFile/gDirty/gFileName/
+    gVRefNum/gHideMarkdown, the undo/redo stacks, gTypingRunActive, and
+    gLinkURLs/gLinkCount used to be defined here as bare globals. They
+    now live in gDocuments[0] (document.c), reached via FrontDocument().
+    No window management changed -- there is still exactly one window,
+    created once in MakeWindow below -- this is purely the internal
+    restructure described in the design doc's §3.
 */
 
 #include "app.h"
 
-WindowPtr gWindow;
-TEHandle gTE;
-TEHandle gHiddenTE;
-TEHandle gActiveTE;
-ControlHandle gScrollBar;
-Boolean gScrollBarVisible = false;
 Boolean gDone = false;
-Boolean gHaveFile = false;
-Boolean gDirty = false;
-Str255 gFileName;
-short gVRefNum;
 MenuHandle gViewMenu;
 MenuHandle gEditMenu;
-Boolean gHideMarkdown = true;
 short gZoomIndex = kZoomBaselineIndex;
-
-UndoSnapshot gUndoStack[MAX_UNDO_LEVELS];
-short gUndoCount = 0;
-UndoSnapshot gRedoStack[MAX_UNDO_LEVELS];
-short gRedoCount = 0;
-Boolean gTypingRunActive = false;
-
-Str255 gLinkURLs[MAX_LINKS + 1];
-short gLinkCount = 0;
 
 static void Init(void)
 {
@@ -52,16 +41,23 @@ static void Init(void)
     achieves the same thing trivially. Must target the Window Manager
     port (global screen coordinates), not whatever window's port happens
     to be current, since the menu bar isn't part of any window.
+
+    Guards against FrontDocument() returning NULL: MakeMenu() below calls
+    this once, before MakeWindow() has run and before gDocuments[0] is
+    populated -- the only point in the whole program where there isn't a
+    front document yet. Everywhere else this is called from, a window
+    already exists.
 */
 void UpdateMenuBarLook(void)
 {
     GrafPtr savePort;
     GrafPtr wMgrPort;
     Rect bar;
+    DocumentPtr doc = FrontDocument();
 
     DrawMenuBar();
 
-    if (gHideMarkdown) {
+    if (doc != NULL && doc->hideMarkdown) {
         GetPort(&savePort);
         GetWMgrPort(&wMgrPort);
         SetPort(wMgrPort);
@@ -109,8 +105,19 @@ static void MakeMenu(void)
     UpdateMenuBarLook();
 }
 
+/*
+    Populates gDocuments[0] -- the one document this milestone ever
+    creates. Every field DocumentRecord defines gets an explicit initial
+    value here rather than relying on gDocuments' BSS zero-init, both
+    for readability (this function is now "the complete initial state of
+    a document" in one place) and because two fields specifically need a
+    non-zero sentinel (cachedTotalHeightNLines/cachedCaretLine = -1,
+    matching the original file-statics in scrolling.c -- zero would be a
+    valid nLines/line-index value, not a safe default here).
+*/
 static void MakeWindow(void)
 {
+    DocumentPtr doc = &gDocuments[0];
     Rect bounds;
     Rect viewRect;
     Rect sbRect;
@@ -119,38 +126,72 @@ static void MakeWindow(void)
     bounds = qd.screenBits.bounds;
     bounds.top += MENU_BAR_HEIGHT;
 
-    gWindow = NewWindow(NULL, &bounds, "\p", true, plainDBox,
-                         (WindowPtr) -1L, false, 0);
-    SetPort(gWindow);
+    doc->window = NewWindow(NULL, &bounds, "\p", true, plainDBox,
+                             (WindowPtr) -1L, false, 0);
+    SetPort(doc->window);
 
     GetFNum("\pTimes", &fontNum);
     TextFont(fontNum);
     TextSize(CurrentFontSize());
 
-    viewRect = gWindow->portRect;
+    viewRect = doc->window->portRect;
     viewRect.left += MARGIN_H;
     viewRect.right -= MARGIN_H;
     viewRect.top += MARGIN_TOP;
     viewRect.bottom -= MARGIN_BOTTOM;
 
-    gTE = TEStyleNew(&viewRect, &viewRect);
-    gHiddenTE = TEStyleNew(&viewRect, &viewRect);
-    gActiveTE = gHideMarkdown ? gHiddenTE : gTE;
-    TEActivate(gActiveTE);
+    doc->te = TEStyleNew(&viewRect, &viewRect);
+    doc->hiddenTE = TEStyleNew(&viewRect, &viewRect);
+    doc->hideMarkdown = true;
+    doc->activeTE = doc->hideMarkdown ? doc->hiddenTE : doc->te;
+    TEActivate(doc->activeTE);
 
     sbRect = viewRect;
     sbRect.left = viewRect.right + (MARGIN_H - SCROLLBAR_WIDTH) / 2;
     sbRect.right = sbRect.left + SCROLLBAR_WIDTH;
     sbRect.top -= 1;
     sbRect.bottom += 1;
-    gScrollBar = NewControl(gWindow, &sbRect, "\p", false, 0, 0, 0, scrollBarProc, 0);
+    doc->scrollBar = NewControl(doc->window, &sbRect, "\p", false, 0, 0, 0, scrollBarProc, 0);
+    doc->scrollBarVisible = false;
+
+    doc->haveFile = false;
+    doc->dirty = false;
+    doc->fileName[0] = 0;
+    doc->vRefNum = 0;
+
+    doc->undoCount = 0;
+    doc->redoCount = 0;
+    doc->typingRunActive = false;
+
+    doc->linkCount = 0;
+
+    doc->cachedTotalHeightNLines = -1;
+    doc->cachedCaretLine = -1;
+    doc->cachedTotalHeight = 0;
+    doc->cachedHeightToLine = 0;
+    doc->cachedHeightToLineNext = 0;
+
+    /* Must be set last -- everything above establishes the state that
+       DocumentForWindow()/FrontDocument() would otherwise expose
+       half-initialized the moment inUse goes true. */
+    doc->inUse = true;
 }
 
+/*
+    Resolves the front document rather than the document owning w --
+    with only one window/document possible this milestone, those are
+    the same thing. Resolving from w specifically (so a background
+    window's update event can't redraw using the wrong document's TE)
+    is one of the event-dispatch fixes MULTI_WINDOW_DESIGN.md §6
+    covers -- deliberately not done yet; that's Milestone 2.
+*/
 static void DoUpdate(WindowPtr w)
 {
+    DocumentPtr doc = FrontDocument();
+
     BeginUpdate(w);
     EraseRect(&w->portRect);
-    TEUpdate(&w->portRect, gActiveTE);
+    TEUpdate(&w->portRect, doc->activeTE);
     DrawControls(w);
     EndUpdate(w);
 }
@@ -159,6 +200,7 @@ static void DoMenuCommand(long menuResult)
 {
     short menuID = HiWord(menuResult);
     short menuItem = LoWord(menuResult);
+    DocumentPtr doc = FrontDocument();
 
     if (menuID == mFile) {
         switch (menuItem) {
@@ -187,10 +229,10 @@ static void DoMenuCommand(long menuResult)
             case iSelectAll: DoSelectAll(); break;
         }
     } else if (menuID == mStyle) {
-        gDirty = true;
+        doc->dirty = true;
         PushUndoSnapshot();
-        gTypingRunActive = false;
-        if (gHideMarkdown) {
+        doc->typingRunActive = false;
+        if (doc->hideMarkdown) {
             switch (menuItem) {
                 case iBold:   ToggleFace(bold); break;
                 case iItalic: ToggleFace(italic); break;
@@ -242,13 +284,15 @@ static void EventLoop(void)
     EventRecord event;
     WindowPtr w;
     short part;
+    DocumentPtr doc;
 
     while (!gDone) {
         if (WaitNextEvent(everyEvent, &event, 15, NULL)) {
+            doc = FrontDocument();
             /* Disposing a dialog/window doesn't restore the caller's port
                -- cheap insurance against any path (found or not) leaving
                thePort dangling at a freed window's memory. */
-            SetPort(gWindow);
+            SetPort(doc->window);
             switch (event.what) {
                 case updateEvt:
                     DoUpdate((WindowPtr) event.message);
@@ -264,11 +308,11 @@ static void EventLoop(void)
 
                         SetPort(w);
                         GlobalToLocal(&event.where);
-                        if (FindControl(event.where, w, &hitControl) != 0 && hitControl == gScrollBar)
+                        if (FindControl(event.where, w, &hitControl) != 0 && hitControl == doc->scrollBar)
                             DoScrollClick(event.where);
                         else {
-                            gTypingRunActive = false;
-                            TEClick(event.where, (event.modifiers & shiftKey) != 0, gActiveTE);
+                            doc->typingRunActive = false;
+                            TEClick(event.where, (event.modifiers & shiftKey) != 0, doc->activeTE);
                         }
                     }
                     break;
@@ -289,18 +333,18 @@ static void EventLoop(void)
                         }
                     } else {
                         if (isContentKey) {
-                            if (!gTypingRunActive) {
+                            if (!doc->typingRunActive) {
                                 PushUndoSnapshot();
-                                gTypingRunActive = true;
+                                doc->typingRunActive = true;
                             }
                         } else {
-                            gTypingRunActive = false;
+                            doc->typingRunActive = false;
                         }
 
-                        TEKey(key, gActiveTE);
+                        TEKey(key, doc->activeTE);
                         if (isContentKey) {
-                            gDirty = true;
-                            if (gHideMarkdown)
+                            doc->dirty = true;
+                            if (doc->hideMarkdown)
                                 DetectInlineMarkdown(key);
                         }
                         ScrollCaretIntoView();
@@ -311,13 +355,13 @@ static void EventLoop(void)
 
                 case activateEvt:
                     if ((event.modifiers & activeFlag) != 0)
-                        TEActivate(gActiveTE);
+                        TEActivate(doc->activeTE);
                     else
-                        TEDeactivate(gActiveTE);
+                        TEDeactivate(doc->activeTE);
                     break;
             }
         }
-        TEIdle(gActiveTE);
+        TEIdle(FrontDocument()->activeTE);
     }
 }
 
@@ -337,7 +381,7 @@ int main(void)
        happen now, so the window has gone through one proper paint before
        the user can type anything. Without this, the very first line typed
        (before any other update has occurred) doesn't render reliably. */
-    DoUpdate(gWindow);
+    DoUpdate(gDocuments[0].window);
 
     CountAppFiles(&message, &count);
     if (count >= 1 && message == appOpen)

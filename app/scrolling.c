@@ -13,16 +13,16 @@ static short CurrentScrollOffset(TEHandle te)
     return (**te).viewRect.top - (**te).destRect.top;
 }
 
-static void SyncScrollbarToOffset(void)
+static void SyncScrollbarToOffset(DocumentPtr doc)
 {
-    short newValue = CurrentScrollOffset(gActiveTE);
+    short newValue = CurrentScrollOffset(doc->activeTE);
 
     /* SetControlValue always redraws the control, even when the value is
        unchanged -- called every tick, an unguarded call here would redraw
        the scrollbar (and the flicker that comes with it) on every single
        keystroke for no reason. */
-    if (newValue != GetControlValue(gScrollBar))
-        SetControlValue(gScrollBar, newValue);
+    if (newValue != GetControlValue(doc->scrollBar))
+        SetControlValue(doc->scrollBar, newValue);
 }
 
 /*
@@ -31,10 +31,14 @@ static void SyncScrollbarToOffset(void)
     proven reliable (see the comment in ScrollCaretIntoView), but O(n)
     in the document's current line count. Calling that on every single
     keystroke is fine on a fast emulator but visibly slows typing down
-    on real 68000 hardware as a document grows. These two small caches
-    skip the recompute whenever nothing that affects the answer has
-    changed since the last call -- the underlying TEGetHeight calls and
-    their cumulative-from-0 form are otherwise untouched.
+    on real 68000 hardware as a document grows. The two small caches now
+    living in DocumentRecord (cachedTotalHeightNLines/cachedTotalHeight,
+    cachedCaretLine/cachedHeightToLine/cachedHeightToLineNext -- moved
+    here from this file's own file-statics as part of the DocumentRecord
+    refactor, see document.h) skip the recompute whenever nothing that
+    affects the answer has changed since the last call -- the underlying
+    TEGetHeight calls and their cumulative-from-0 form are otherwise
+    untouched.
 
     Invalidated via InvalidateHeightCache(): unconditionally from
     AdjustScrollbar (the full/infrequent path covering style changes,
@@ -45,17 +49,12 @@ static void SyncScrollbarToOffset(void)
     change a line's height (heading conversion) without changing
     nLines.
 */
-static short gCachedTotalHeightNLines = -1;
-static long gCachedTotalHeight = 0;
-
-static short gCachedCaretLine = -1;
-static long gCachedHeightToLine = 0;
-static long gCachedHeightToLineNext = 0;
-
 void InvalidateHeightCache(void)
 {
-    gCachedTotalHeightNLines = -1;
-    gCachedCaretLine = -1;
+    DocumentPtr doc = FrontDocument();
+
+    doc->cachedTotalHeightNLines = -1;
+    doc->cachedCaretLine = -1;
 }
 
 /*
@@ -69,32 +68,33 @@ void InvalidateHeightCache(void)
 */
 void UpdateScrollbarRange(void)
 {
+    DocumentPtr doc = FrontDocument();
     long textHeight;
     short viewHeight;
     short maxVal;
     Boolean shouldShow;
 
-    if ((**gActiveTE).nLines == gCachedTotalHeightNLines) {
-        textHeight = gCachedTotalHeight;
+    if ((**doc->activeTE).nLines == doc->cachedTotalHeightNLines) {
+        textHeight = doc->cachedTotalHeight;
     } else {
-        textHeight = TEGetHeight((**gActiveTE).nLines, 0, gActiveTE);
-        gCachedTotalHeightNLines = (**gActiveTE).nLines;
-        gCachedTotalHeight = textHeight;
+        textHeight = TEGetHeight((**doc->activeTE).nLines, 0, doc->activeTE);
+        doc->cachedTotalHeightNLines = (**doc->activeTE).nLines;
+        doc->cachedTotalHeight = textHeight;
     }
-    viewHeight = (**gActiveTE).viewRect.bottom - (**gActiveTE).viewRect.top;
+    viewHeight = (**doc->activeTE).viewRect.bottom - (**doc->activeTE).viewRect.top;
 
     maxVal = (textHeight > viewHeight) ? (short) (textHeight - viewHeight) : 0;
 
-    if (maxVal != GetControlMaximum(gScrollBar))
-        SetControlMaximum(gScrollBar, maxVal);
+    if (maxVal != GetControlMaximum(doc->scrollBar))
+        SetControlMaximum(doc->scrollBar, maxVal);
 
     shouldShow = (maxVal > 0);
-    if (shouldShow != gScrollBarVisible) {
+    if (shouldShow != doc->scrollBarVisible) {
         if (shouldShow)
-            ShowControl(gScrollBar);
+            ShowControl(doc->scrollBar);
         else
-            HideControl(gScrollBar);
-        gScrollBarVisible = shouldShow;
+            HideControl(doc->scrollBar);
+        doc->scrollBarVisible = shouldShow;
     }
 }
 
@@ -106,20 +106,21 @@ void UpdateScrollbarRange(void)
 */
 void AdjustScrollbar(void)
 {
+    DocumentPtr doc = FrontDocument();
     short maxVal;
     short curOffset;
 
     InvalidateHeightCache();
     UpdateScrollbarRange();
 
-    maxVal = GetControlMaximum(gScrollBar);
-    curOffset = CurrentScrollOffset(gActiveTE);
+    maxVal = GetControlMaximum(doc->scrollBar);
+    curOffset = CurrentScrollOffset(doc->activeTE);
     if (curOffset > maxVal)
-        TEScroll(0, curOffset - maxVal, gActiveTE);
+        TEScroll(0, curOffset - maxVal, doc->activeTE);
     else if (curOffset < 0)
-        TEScroll(0, curOffset, gActiveTE);
+        TEScroll(0, curOffset, doc->activeTE);
 
-    SyncScrollbarToOffset();
+    SyncScrollbarToOffset(doc);
 }
 
 /* lineStarts[] is sorted, so the line containing pos is found with a
@@ -143,12 +144,13 @@ static short LineContaining(TEHandle te, short pos)
 
 void ScrollCaretIntoView(void)
 {
+    DocumentPtr doc = FrontDocument();
     short caretLine;
     long heightToLine, heightToLineNext;
     short lineTop, lineBottom;
     short viewTop, viewBottom;
 
-    caretLine = LineContaining(gActiveTE, (**gActiveTE).selEnd);
+    caretLine = LineContaining(doc->activeTE, (**doc->activeTE).selEnd);
 
     /* Querying a single line's height in isolation (e.g. TEGetHeight
        for just [caretLine, caretLine+1)) comes back unreliable right
@@ -163,40 +165,53 @@ void ScrollCaretIntoView(void)
        an O(n) call on every keystroke -- the raw heights are cached
        rather than the final lineTop/lineBottom, since those also
        depend on destRect.top, which changes on scroll. */
-    if (caretLine == gCachedCaretLine) {
-        heightToLine = gCachedHeightToLine;
-        heightToLineNext = gCachedHeightToLineNext;
+    if (caretLine == doc->cachedCaretLine) {
+        heightToLine = doc->cachedHeightToLine;
+        heightToLineNext = doc->cachedHeightToLineNext;
     } else {
-        heightToLine = TEGetHeight(caretLine, 0, gActiveTE);
-        heightToLineNext = TEGetHeight(caretLine + 1, 0, gActiveTE);
-        gCachedCaretLine = caretLine;
-        gCachedHeightToLine = heightToLine;
-        gCachedHeightToLineNext = heightToLineNext;
+        heightToLine = TEGetHeight(caretLine, 0, doc->activeTE);
+        heightToLineNext = TEGetHeight(caretLine + 1, 0, doc->activeTE);
+        doc->cachedCaretLine = caretLine;
+        doc->cachedHeightToLine = heightToLine;
+        doc->cachedHeightToLineNext = heightToLineNext;
     }
-    lineTop = (**gActiveTE).destRect.top + heightToLine;
-    lineBottom = (**gActiveTE).destRect.top + heightToLineNext;
+    lineTop = (**doc->activeTE).destRect.top + heightToLine;
+    lineBottom = (**doc->activeTE).destRect.top + heightToLineNext;
 
-    viewTop = (**gActiveTE).viewRect.top;
-    viewBottom = (**gActiveTE).viewRect.bottom;
+    viewTop = (**doc->activeTE).viewRect.top;
+    viewBottom = (**doc->activeTE).viewRect.bottom;
 
     if (lineBottom > viewBottom)
-        TEScroll(0, viewBottom - lineBottom, gActiveTE);
+        TEScroll(0, viewBottom - lineBottom, doc->activeTE);
     else if (lineTop < viewTop)
-        TEScroll(0, viewTop - lineTop, gActiveTE);
+        TEScroll(0, viewTop - lineTop, doc->activeTE);
 
-    SyncScrollbarToOffset();
+    SyncScrollbarToOffset(doc);
 }
 
+/*
+    ControlActionUPP has a fixed Toolbox-mandated signature -- no room
+    for an extra DocumentPtr parameter here the way ordinary functions
+    in this refactor get one. Resolved instead from the control itself:
+    every ControlHandle already knows its owning window via
+    contrlOwner, and DocumentForWindow (document.c) turns that into the
+    document that owns it. Correct even once Milestone 3 allows more
+    than one document/scrollbar to exist -- this doesn't assume "the"
+    front document the way most of this refactor's FrontDocument()
+    calls do, since a control's action proc has no reason to assume its
+    control belongs to the front window.
+*/
 static pascal void ScrollAction(ControlHandle control, short part)
 {
+    DocumentPtr doc = DocumentForWindow((**control).contrlOwner);
     short max, delta, desired;
     short pageSize;
 
-    if (part == 0)
+    if (part == 0 || doc == NULL)
         return;
 
     max = GetControlMaximum(control);
-    pageSize = (**gActiveTE).viewRect.bottom - (**gActiveTE).viewRect.top;
+    pageSize = (**doc->activeTE).viewRect.bottom - (**doc->activeTE).viewRect.top;
 
     switch (part) {
         case inUpButton:   delta = -16; break;
@@ -206,30 +221,31 @@ static pascal void ScrollAction(ControlHandle control, short part)
         default:           delta = 0; break;
     }
 
-    desired = CurrentScrollOffset(gActiveTE) + delta;
+    desired = CurrentScrollOffset(doc->activeTE) + delta;
     if (desired < 0) desired = 0;
     if (desired > max) desired = max;
 
-    TEScroll(0, CurrentScrollOffset(gActiveTE) - desired, gActiveTE);
-    SetControlValue(control, CurrentScrollOffset(gActiveTE));
+    TEScroll(0, CurrentScrollOffset(doc->activeTE) - desired, doc->activeTE);
+    SetControlValue(control, CurrentScrollOffset(doc->activeTE));
 }
 
 void DoScrollClick(Point pt)
 {
+    DocumentPtr doc = FrontDocument();
     ControlHandle control;
     short part;
     short desired;
 
-    part = FindControl(pt, gWindow, &control);
-    if (part == 0 || control != gScrollBar)
+    part = FindControl(pt, doc->window, &control);
+    if (part == 0 || control != doc->scrollBar)
         return;
 
     if (part == inThumb) {
-        TrackControl(gScrollBar, pt, NULL);
-        desired = GetControlValue(gScrollBar);
-        TEScroll(0, CurrentScrollOffset(gActiveTE) - desired, gActiveTE);
-        SyncScrollbarToOffset();
+        TrackControl(doc->scrollBar, pt, NULL);
+        desired = GetControlValue(doc->scrollBar);
+        TEScroll(0, CurrentScrollOffset(doc->activeTE) - desired, doc->activeTE);
+        SyncScrollbarToOffset(doc);
     } else {
-        TrackControl(gScrollBar, pt, NewControlActionUPP(ScrollAction));
+        TrackControl(doc->scrollBar, pt, NewControlActionUPP(ScrollAction));
     }
 }

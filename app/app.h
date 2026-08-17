@@ -17,6 +17,8 @@
 #include <Multiverse.h>
 #include <string.h>
 
+#include "document.h"
+
 #define MARGIN_H     64
 #define MARGIN_TOP   32
 #define MARGIN_BOTTOM 24
@@ -88,67 +90,20 @@
 #define kZoomPrefID   128
 
 /*
-    Undo/redo snapshots store the *canonical markdown text* regardless
-    of which mode is active, not gActiveTE's raw buffer -- gHiddenTE's
-    styling (bold/heading/link runs) has no simple "get it all, restore
-    it all" API in classic styled TextEdit, but canonical markdown text
-    already round-trips styling correctly through the existing
-    BuildHiddenView/SyncHiddenToCanonical machinery. So: push a
-    snapshot by syncing to canonical first (if in Writer mode) and
-    copying gTE's text; restore one by replacing gTE's text and, if in
-    Writer mode, rebuilding gHiddenTE from it. Both syncing and
-    rebuilding are full-document operations, but they only happen at
-    undo/redo-relevant moments (pushes are coalesced per typing run,
-    not per keystroke), never per character.
-
-    Undo history is intentionally cleared on every view-mode switch
-    and on new/open -- simpler and more predictable than trying to
-    make snapshots meaningful across two independently-edited buffers.
+    Global state -- actual storage lives in main.c. Per-document state
+    (everything that used to live here as gWindow/gTE/gHiddenTE/
+    gActiveTE/gScrollBar/gDirty/etc.) moved into DocumentRecord -- see
+    document.h -- and is reached via FrontDocument()/DocumentForWindow(),
+    not as bare globals, as of this milestone. What's left here is
+    genuinely app-wide: gDone (should the app quit), the two shared menu
+    handles (menus are app-wide UI, not per-document), and gZoomIndex
+    (zoom stays a single app-wide preference by design, not a per-
+    document setting -- see MULTI_WINDOW_DESIGN.md §10's zoom.c note).
 */
-#define MAX_UNDO_LEVELS 15
-
-typedef struct {
-    Handle textH;
-    long length;
-    short selStart, selEnd;
-} UndoSnapshot;
-
-/*
-    Link URLs in Writer mode live here, keyed by a small ID (1-based;
-    0 means "no link"). The ID rides along in each run's otherwise-unused
-    tsColor.red -- TextEdit already tracks style-run boundaries through
-    every insert/delete, so the ID (and therefore the URL) follows the
-    linked text automatically with no manual range bookkeeping. Reset
-    (gLinkCount = 0) at the start of every BuildHiddenView, since that's
-    a full reparse of gTE and re-derives whichever links currently exist.
-*/
-#define MAX_LINKS 64
-
-/* Global state -- actual storage lives in main.c */
-extern WindowPtr gWindow;
-extern TEHandle gTE;
-extern TEHandle gHiddenTE;
-extern TEHandle gActiveTE;
-extern ControlHandle gScrollBar;
-extern Boolean gScrollBarVisible;
 extern Boolean gDone;
-extern Boolean gHaveFile;
-extern Boolean gDirty;
-extern Str255 gFileName;
-extern short gVRefNum;
 extern MenuHandle gViewMenu;
 extern MenuHandle gEditMenu;
-extern Boolean gHideMarkdown;
 extern short gZoomIndex;
-
-extern UndoSnapshot gUndoStack[MAX_UNDO_LEVELS];
-extern short gUndoCount;
-extern UndoSnapshot gRedoStack[MAX_UNDO_LEVELS];
-extern short gRedoCount;
-extern Boolean gTypingRunActive;
-
-extern Str255 gLinkURLs[MAX_LINKS + 1];
-extern short gLinkCount;
 
 /* main.c */
 void UpdateMenuBarLook(void);

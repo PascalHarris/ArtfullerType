@@ -99,6 +99,7 @@ static void CenterAndShowDialog(DialogPtr dlg)
 
 void ShowSplashScreen(void)
 {
+    DocumentPtr doc = FrontDocument();
     DialogPtr dlg;
     short item;
     DialogItemType type;
@@ -121,7 +122,7 @@ void ShowSplashScreen(void)
         } while (item != iSplashNew && item != iSplashOpen);
 
         DisposeDialog(dlg);
-        SetPort(gWindow);
+        SetPort(doc->window);
         UpdateMenuBarLook();
 
         /* Open Document, then Cancel in the file picker -- show the splash again */
@@ -134,6 +135,7 @@ void ShowSplashScreen(void)
    active editing rather than at startup. */
 void ShowAboutBox(void)
 {
+    DocumentPtr doc = FrontDocument();
     DialogPtr dlg;
     short item;
     DialogItemType type;
@@ -154,6 +156,6 @@ void ShowAboutBox(void)
     } while (item != iAboutOK);
 
     DisposeDialog(dlg);
-    SetPort(gWindow);
+    SetPort(doc->window);
     UpdateMenuBarLook();
 }

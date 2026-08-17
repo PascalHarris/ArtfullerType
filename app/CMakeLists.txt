@@ -9,6 +9,7 @@ project(ArtfulType C)
 
 add_application(ArtfulType
     main.c
+    document.c
     scrolling.c
     markdown.c
     undo.c

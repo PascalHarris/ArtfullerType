@@ -90,8 +90,22 @@ static void RescaleStyles(TEHandle te, short oldBase, short newBase)
     TESetSelect(savedStart, savedEnd, te);
 }
 
+/*
+    gZoomIndex itself stays a single app-wide preference (see app.h) --
+    multiple open documents would all share one zoom setting, matching
+    MULTI_WINDOW_DESIGN.md §10's note that only the live rescale should
+    be scoped to a document, not the preference value. That rescale
+    applies to the front document only -- with one document/window this
+    milestone, that's unconditionally correct; once Milestone 3 allows
+    more than one, changing zoom while document A is front does NOT
+    retroactively rescale document B's already-built hiddenTE (it'll
+    pick up the new gZoomIndex next time BuildHiddenView runs for it,
+    e.g. on next edit or mode switch) -- an accepted gap for now, not
+    something this milestone's scope covers fixing.
+*/
 static void ApplyZoomIndex(short newIndex)
 {
+    DocumentPtr doc = FrontDocument();
     short oldBase;
     short newBase;
 
@@ -103,10 +117,10 @@ static void ApplyZoomIndex(short newIndex)
     newBase = CurrentFontSize();
 
     ClearStyles();
-    RescaleStyles(gHiddenTE, oldBase, newBase);
+    RescaleStyles(doc->hiddenTE, oldBase, newBase);
     SaveZoomPref();
     AdjustScrollbar();
-    InvalRect(&gWindow->portRect);
+    InvalRect(&doc->window->portRect);
 }
 
 void DoZoom(short direction)
