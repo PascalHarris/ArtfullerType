@@ -114,6 +114,17 @@
 #define mHelp    132
 #define iAbout   1
 
+/*
+    Window menu (Milestone 4, MULTI_WINDOW_DESIGN.md §5.3) has no fixed
+    item constants -- its items are one per open document, built and
+    torn down at runtime by RebuildWindowMenu (main.c) since the count
+    changes as documents open and close. 133 doesn't collide with any
+    other MENU-type resource ID above (kAboutDialog is also 133, but a
+    DLOG, a different resource type -- Mac resource IDs are namespaced
+    per type, not global).
+*/
+#define mWindow  133
+
 #define MAX_STYLE_OPS 512
 
 #define kNumZoomLevels 5
@@ -137,11 +148,14 @@ extern Boolean gDone;
 extern MenuHandle gFileMenu;
 extern MenuHandle gViewMenu;
 extern MenuHandle gEditMenu;
+extern MenuHandle gWindowMenu;
 extern short gZoomIndex;
 
 /* main.c */
 void UpdateMenuBarLook(void);
 void UpdateFileMenuState(void);
+void RebuildWindowMenu(void);
+void SyncMenusToFrontDocument(void);
 
 /* scrolling.c */
 void UpdateScrollbarRange(void);

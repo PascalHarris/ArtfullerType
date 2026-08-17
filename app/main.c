@@ -72,6 +72,7 @@ Boolean gDone = false;
 MenuHandle gFileMenu;
 MenuHandle gViewMenu;
 MenuHandle gEditMenu;
+MenuHandle gWindowMenu;
 short gZoomIndex = kZoomBaselineIndex;
 
 static void Init(void)
@@ -149,6 +150,14 @@ static void MakeMenu(void)
     InsertMenu(gViewMenu, 0);
     CheckItem(gViewMenu, iWriterView, true);
 
+    /* No items appended here -- RebuildWindowMenu (below) builds this
+       menu's contents at runtime, one item per open document, since
+       the count and titles change as documents open and close. Called
+       for the first time once main() has created the first document;
+       empty until then. */
+    gWindowMenu = NewMenu(mWindow, "\pWindow");
+    InsertMenu(gWindowMenu, 0);
+
     helpMenu = NewMenu(mHelp, "\pHelp");
     AppendMenu(helpMenu, "\pAbout The Artful Type...");
     InsertMenu(helpMenu, 0);
@@ -175,6 +184,126 @@ void UpdateFileMenuState(void)
         DisableItem(gFileMenu, iNew);
         DisableItem(gFileMenu, iOpen);
     }
+}
+
+/*
+    Returns the Nth in-use document slot (1-based, matching Window menu
+    item numbering), walking gDocuments in slot order. RebuildWindowMenu
+    below builds the menu by walking gDocuments in this exact same
+    order, appending one item per in-use slot -- so the Nth item it
+    appends always corresponds to what this returns for that same N.
+    SyncMenusToFrontDocument re-checks the menu the same way, without a
+    full rebuild, using this to map each existing item back to a
+    document. Keep all three in sync if any changes.
+*/
+static DocumentPtr DocumentForWindowMenuItem(short item)
+{
+    short i;
+    short count = 0;
+
+    for (i = 0; i < MAX_DOCUMENTS; i++) {
+        if (gDocuments[i].inUse) {
+            count++;
+            if (count == item)
+                return &gDocuments[i];
+        }
+    }
+    return NULL;
+}
+
+/*
+    Rebuilds the Window menu's contents from scratch: deletes every
+    existing item, then appends one per open document (filename, or
+    "Untitled"/"Untitled 2"/... for documents with no file yet -- at
+    most MAX_DOCUMENTS untitled at once, so a single extra digit always
+    suffices, no general number-formatting needed), checking whichever
+    one matches FrontDocument(). Called after every document create and
+    close per MULTI_WINDOW_DESIGN.md §5.3 -- see call sites in file.c
+    (DoNewFile/DoOpenFile) and this file's CloseDocumentInteractive and
+    main().
+
+    Item titles come from AppendMenu(gWindowMenu, "\p ") (a placeholder,
+    safe: a single space has no meta-character meaning to AppendMenu)
+    followed by SetMenuItemText with the real text, rather than
+    embedding a filename directly into an AppendMenu string --
+    AppendMenu's mini-language treats characters like ; / ! ( < as
+    syntax, and HFS filenames are permissive enough that a user's
+    actual filename could contain any of them (only ':' is forbidden).
+    SetMenuItemText sets the raw text with no such interpretation.
+    (This toolchain's real name for the classic SetItem call --
+    confirmed against autc04/multiversal's actual definitions after
+    SetItem itself turned out not to be exposed here; not guessed.)
+*/
+void RebuildWindowMenu(void)
+{
+    DocumentPtr front = FrontDocument();
+    short i;
+    short itemIndex = 0;
+    short untitledCount = 0;
+
+    while (CountMItems(gWindowMenu) > 0)
+        DeleteMenuItem(gWindowMenu, 1);
+
+    for (i = 0; i < MAX_DOCUMENTS; i++) {
+        DocumentPtr doc = &gDocuments[i];
+        Str255 title;
+
+        if (!doc->inUse)
+            continue;
+
+        itemIndex++;
+
+        if (doc->haveFile) {
+            BlockMove(doc->fileName, title, doc->fileName[0] + 1);
+        } else {
+            static const unsigned char kUntitled[] = "\pUntitled";
+            short len = kUntitled[0];
+
+            BlockMove(kUntitled, title, len + 1);
+            untitledCount++;
+            if (untitledCount > 1) {
+                title[++len] = ' ';
+                title[++len] = (unsigned char) ('0' + untitledCount);
+                title[0] = (unsigned char) len;
+            }
+        }
+
+        AppendMenu(gWindowMenu, "\p ");
+        SetMenuItemText(gWindowMenu, itemIndex, title);
+        CheckItem(gWindowMenu, itemIndex, (doc == front));
+    }
+}
+
+/*
+    Re-derives every menu's front-document-dependent state from
+    scratch, rather than trusting whichever call site happened to
+    leave it correct. Called at the three points MULTI_WINDOW_DESIGN.md
+    §5.3 requires -- after SelectWindow from the Window menu (below, in
+    DoMenuCommand), after activateEvt/osEvt bring a window forward
+    (ActivateWindowDocument above), and once CloseDocumentInteractive's
+    close has settled on whichever document is now front -- plus one
+    case the design doc's three don't explicitly name but the same
+    reasoning covers: file.c's DoNewFile/DoOpenFile, since a newly
+    created document also becomes front and starts from its own
+    default state (Markdown/Writer mode, empty undo history), which
+    won't generally match whatever the previous front document's menu
+    state was.
+*/
+void SyncMenusToFrontDocument(void)
+{
+    DocumentPtr doc = FrontDocument();
+    short i;
+
+    if (doc == NULL)
+        return;
+
+    CheckItem(gViewMenu, iMarkdownView, !doc->hideMarkdown);
+    CheckItem(gViewMenu, iWriterView, doc->hideMarkdown);
+
+    UpdateEditMenuState();
+
+    for (i = 1; i <= CountMItems(gWindowMenu); i++)
+        CheckItem(gWindowMenu, i, (DocumentForWindowMenuItem(i) == doc));
 }
 
 /*
@@ -246,6 +375,7 @@ static void CloseDocumentInteractive(DocumentPtr doc)
         return;
 
     CloseDocument(doc);
+    RebuildWindowMenu();
     UpdateFileMenuState();
 
     if (FrontDocument() == NULL) {
@@ -261,11 +391,20 @@ static void CloseDocumentInteractive(DocumentPtr doc)
         DocumentPtr freshDoc = CreateNewDocument();
 
         if (freshDoc != NULL) {
+            RebuildWindowMenu();
             DoUpdate(freshDoc->window);
             ShowSplashScreen();
             UpdateFileMenuState();
         }
     }
+
+    /* Reflects whichever document is front by this point -- another
+       already-open one, the fresh fallback document if the splash's
+       New button was chosen, or yet another document if Open was
+       chosen instead (DoOpenFile, file.c, does its own RebuildWindowMenu/
+       SyncMenusToFrontDocument too, so this is redundant-but-harmless
+       in that specific case, not a gap). */
+    SyncMenusToFrontDocument();
 }
 
 /*
@@ -364,6 +503,13 @@ static void DoMenuCommand(long menuResult)
         switch (menuItem) {
             case iAbout: ShowAboutBox(); break;
         }
+    } else if (menuID == mWindow) {
+        DocumentPtr chosen = DocumentForWindowMenuItem(menuItem);
+
+        if (chosen != NULL) {
+            SelectWindow(chosen->window);
+            SyncMenusToFrontDocument();
+        }
     }
     HiliteMenu(0);
     /* HiliteMenu un-hilites the clicked title assuming the Menu Manager's
@@ -397,6 +543,13 @@ static void ActivateWindowDocument(WindowPtr w, Boolean activating)
         else
             TEDeactivate(doc->activeTE);
     }
+
+    /* Only on activation, not deactivation -- deactivating a window
+       doesn't by itself establish which one (if any) is now front;
+       whichever activateEvt/osEvt eventually activates the next one
+       will trigger its own sync. */
+    if (activating)
+        SyncMenusToFrontDocument();
 }
 
 static void EventLoop(void)
@@ -592,7 +745,9 @@ int main(void)
     LoadZoomPref();
     MakeMenu();
     doc = CreateNewDocument();
+    RebuildWindowMenu();
     UpdateFileMenuState();
+    SyncMenusToFrontDocument();
 
     /* A newly-created visible window has its whole content area marked
        invalid automatically, but the splash dialog appears before the

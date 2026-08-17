@@ -189,6 +189,15 @@ Boolean DoSaveAs(void)
     WriteFile(doc->fileName, doc->vRefNum);
     doc->dirty = false;
     UpdateWindowTitle(doc);
+    /* Not one of MULTI_WINDOW_DESIGN.md §5.3's three named call sites
+       (Save As neither creates nor closes a document), but the Window
+       menu's item for this document displays the same name the title
+       bar does -- leaving it unrebuilt here would mean it keeps
+       showing "Untitled" (or the old name, if this was a rename)
+       until some unrelated document create/close happened to refresh
+       it. Same gap, same fix, just triggered by a rename instead of a
+       create/close. */
+    RebuildWindowMenu();
     return true;
 }
 
@@ -283,7 +292,9 @@ Boolean DoOpenFile(void)
     doc->vRefNum = reply.vRefNum;
     doc->haveFile = true;
     ReadFile(doc->fileName, doc->vRefNum);
+    RebuildWindowMenu();
     UpdateFileMenuState();
+    SyncMenusToFrontDocument();
     return true;
 }
 
@@ -294,5 +305,7 @@ void DoNewFile(void)
     if (doc == NULL)
         return; /* MAX_DOCUMENTS reached -- same safety net as DoOpenFile */
 
+    RebuildWindowMenu();
     UpdateFileMenuState();
+    SyncMenusToFrontDocument();
 }
