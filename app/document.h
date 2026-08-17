@@ -111,17 +111,21 @@ typedef struct DocumentRecord {
     68k-class hardware with real memory constraints; a bounded worst
     case beats unbounded flexibility here).
 
-    This milestone populates exactly one slot (gDocuments[0], from
-    MakeWindow in main.c) and touches no window-management logic --
-    multiple concurrent documents are Milestone 3's job. FrontDocument
-    and DocumentForWindow already have their eventual multi-window
-    shape (scanning for an inUse slot), so no further change to either
-    is needed when Milestone 3 lands.
+    As of Milestone 3, more than one slot can be inUse at a time --
+    CreateNewDocument fills the first free one it finds via
+    FindFreeDocumentSlot, CloseDocument frees one back up. Milestone
+    1's FrontDocument/DocumentForWindow already had this shape (a scan
+    over inUse slots) from the start, so neither needed to change when
+    this landed.
 */
 extern DocumentRecord gDocuments[MAX_DOCUMENTS];
 
 /* document.c */
 DocumentPtr FrontDocument(void);
 DocumentPtr DocumentForWindow(WindowPtr w);
+DocumentPtr FindFreeDocumentSlot(void);
+DocumentPtr CreateNewDocument(void);
+void CloseDocument(DocumentPtr doc);
+void UpdateWindowTitle(DocumentPtr doc);
 
 #endif

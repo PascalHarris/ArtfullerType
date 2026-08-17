@@ -89,6 +89,7 @@ static void ReadFile(StringPtr name, short vRefNum)
     UpdateEditMenuState();
     RefreshActiveView(doc);
     AdjustScrollbar();
+    UpdateWindowTitle(doc);
     InvalRect(&doc->window->portRect);
 }
 
@@ -129,6 +130,7 @@ Boolean DoSaveAs(void)
     doc->haveFile = true;
     WriteFile(doc->fileName, doc->vRefNum);
     doc->dirty = false;
+    UpdateWindowTitle(doc);
     return true;
 }
 
@@ -176,9 +178,32 @@ Boolean ConfirmDiscardChanges(void)
     }
 }
 
+/*
+    Creates a new document and opens the picked file into it, rather
+    than replacing whatever's in the current document -- per
+    MULTI_WINDOW_DESIGN.md §7.1. Because nothing existing is touched
+    until a document has actually been created for the new file, there
+    is genuinely nothing to lose by cancelling the picker or by
+    MAX_DOCUMENTS being reached -- neither path needs (or gets) a
+    ConfirmDiscardChanges guard anymore; Close and Quit are the only
+    two places that still need one.
+
+    Flagging one consequence of this change that's outside this
+    function's own scope to fix: ShowSplashScreen (splash.c) calls this
+    directly for its "Open Document" button, and does so against the
+    blank document main() already created before the splash even
+    appears. After this change, choosing Open from the splash creates a
+    SECOND document for the opened file, leaving that original blank
+    one open too -- so a first launch that opens a file via the splash
+    now ends up with two windows (one empty) instead of one. Whether
+    that's worth a special case in splash.c (e.g. closing the startup
+    document once a splash-driven Open succeeds) is a product decision
+    I haven't made unilaterally; flagging it rather than quietly
+    patching a file this milestone wasn't asked to touch.
+*/
 Boolean DoOpenFile(void)
 {
-    DocumentPtr doc = FrontDocument();
+    DocumentPtr doc;
     SFReply reply;
     Point where = {100, 100};
     SFTypeList types;
@@ -190,24 +215,26 @@ Boolean DoOpenFile(void)
     if (!reply.good)
         return false;
 
+    doc = CreateNewDocument();
+    if (doc == NULL)
+        return false; /* MAX_DOCUMENTS reached -- File > Open should
+                          already be disabled via UpdateFileMenuState by
+                          then; this is a safety net, not a normal path. */
+
     BlockMove(reply.fName, doc->fileName, reply.fName[0] + 1);
     doc->vRefNum = reply.vRefNum;
     doc->haveFile = true;
     ReadFile(doc->fileName, doc->vRefNum);
+    UpdateFileMenuState();
     return true;
 }
 
 void DoNewFile(void)
 {
-    DocumentPtr doc = FrontDocument();
+    DocumentPtr doc = CreateNewDocument();
 
-    TESetSelect(0, 32767, doc->te);
-    TEDelete(doc->te);
-    doc->haveFile = false;
-    doc->dirty = false;
-    ClearUndoRedoStacks();
-    UpdateEditMenuState();
-    RefreshActiveView(doc);
-    AdjustScrollbar();
-    InvalRect(&doc->window->portRect);
+    if (doc == NULL)
+        return; /* MAX_DOCUMENTS reached -- same safety net as DoOpenFile */
+
+    UpdateFileMenuState();
 }

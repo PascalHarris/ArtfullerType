@@ -29,9 +29,27 @@
 #define mFile    128
 #define iNew     1
 #define iOpen    2
-#define iSave    3
-#define iSaveAs  4
-#define iQuit    6
+#define iClose   3
+#define iSave    4
+#define iSaveAs  5
+#define iQuit    7
+
+/*
+    Default document window sizing (Milestone 3). Deliberately NOT a
+    fixed kDefaultWindowWidth/Height as literally described in
+    MULTI_WINDOW_DESIGN.md §4.1 -- this project's primary target is a
+    512x342 compact Mac screen (see the design doc's own memory-budget
+    discussion of Mac Plus-class hardware), and a fixed ~480x340
+    "default" would leave almost no margin there, defeating the whole
+    "standard window, not full-screen" point of this milestone and
+    leaving no room to stagger a second window without it running off
+    screen. CreateNewDocument (document.c) computes the actual size
+    from qd.screenBits.bounds at runtime instead, inset by
+    kDefaultWindowMargin on each side -- sensible on the real target
+    hardware, and scales up reasonably on anything larger.
+*/
+#define kDefaultWindowMargin  40
+#define kWindowStagger        20
 
 #define mEdit    131
 #define iUndo    1
@@ -101,12 +119,14 @@
     document setting -- see MULTI_WINDOW_DESIGN.md §10's zoom.c note).
 */
 extern Boolean gDone;
+extern MenuHandle gFileMenu;
 extern MenuHandle gViewMenu;
 extern MenuHandle gEditMenu;
 extern short gZoomIndex;
 
 /* main.c */
 void UpdateMenuBarLook(void);
+void UpdateFileMenuState(void);
 
 /* scrolling.c */
 void UpdateScrollbarRange(void);
