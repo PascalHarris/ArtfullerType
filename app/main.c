@@ -45,6 +45,7 @@
 */
 
 #include "app.h"
+#include "print.h"
 
 /*
     Confirmed by an actual build error, not assumed this time: this
@@ -73,8 +74,10 @@ MenuHandle gAppleMenu;
 MenuHandle gFileMenu;
 MenuHandle gViewMenu;
 MenuHandle gEditMenu;
+MenuHandle gStyleMenu;
 MenuHandle gWindowMenu;
-short gZoomIndex = kZoomBaselineIndex;
+short gWriterZoomIndex = kZoomBaselineIndex;
+short gMarkdownZoomIndex = kZoomBaselineIndex;
 
 static void Init(void)
 {
@@ -143,8 +146,6 @@ void UpdateMenuBarLook(void)
 
 static void MakeMenu(void)
 {
-    MenuHandle styleMenu;
-
     /* Built and inserted first -- InsertMenu(..., 0) appends to the
        end of the current menu list, so whichever menu is inserted
        first ends up leftmost. Titled with the Apple logo character
@@ -160,7 +161,7 @@ static void MakeMenu(void)
     InsertMenu(gAppleMenu, 0);
 
     gFileMenu = NewMenu(mFile, "\pFile");
-    AppendMenu(gFileMenu, "\pNew/N;Open.../O;Close/W;Save/S;Save As...;(-;Quit/Q");
+    AppendMenu(gFileMenu, "\pNew/N;Open.../O;Close/W;Save/S;Save As...;(-;Page Setup...;Print.../P;(-;Quit/Q");
     InsertMenu(gFileMenu, 0);
 
     /* No "/" shortcut on Redo -- it would register as a second cmd-key
@@ -173,9 +174,9 @@ static void MakeMenu(void)
     DisableItem(gEditMenu, iUndo);
     DisableItem(gEditMenu, iRedo);
 
-    styleMenu = NewMenu(mStyle, "\pStyle");
-    AppendMenu(styleMenu, "\pBold/B;Italic/I;Code/K;Strikethrough;(-;Heading 1/1;Heading 2/2;Heading 3/3;(-;Link/L;(-;None");
-    InsertMenu(styleMenu, 0);
+    gStyleMenu = NewMenu(mStyle, "\pStyle");
+    AppendMenu(gStyleMenu, "\pBold/B;Italic/I;Code/K;Strikethrough;(-;Heading 1/1;Heading 2/2;Heading 3/3;(-;Link/L;(-;None");
+    InsertMenu(gStyleMenu, 0);
 
     gViewMenu = NewMenu(mView, "\pView");
     AppendMenu(gViewMenu, "\pMarkdown;Writer;(-;Distraction Free;(-;Zoom In/=;Zoom Out/-;Default Size/0");
@@ -205,16 +206,24 @@ static void MakeMenu(void)
 }
 
 /*
-    Enables/disables File > New and Open based on whether a document
-    slot is actually free -- called after every document count change
-    (create or close) rather than left to the AppendMenu-time default,
-    so it can never drift out of sync with reality. Per
+    Enables/disables File menu items based on document state -- New and
+    Open based on whether a document slot is actually free (per
     MULTI_WINDOW_DESIGN.md §7.1: "disable New and Open... rather than
-    failing silently" once MAX_DOCUMENTS is reached.
+    failing silently" once MAX_DOCUMENTS is reached), Close/Save/Save
+    As/Page Setup/Print based on whether there's a document to act on
+    at all. That second half didn't matter before "no window open" was
+    a reachable state -- there was always at least one document open by
+    construction -- but now it's a real, permitted state, and each of
+    those items' handlers (file.c/print.c) resolves FrontDocument()
+    without a NULL guard, so leaving them enabled with zero documents
+    open would crash on click or Cmd-key rather than fail silently.
+    Called after every document count change (create or close), same
+    as before.
 */
 void UpdateFileMenuState(void)
 {
     Boolean haveFreeSlot = (FindFreeDocumentSlot() != NULL);
+    Boolean haveDocument = (FrontDocument() != NULL);
 
     if (haveFreeSlot) {
         EnableItem(gFileMenu, iNew);
@@ -222,6 +231,20 @@ void UpdateFileMenuState(void)
     } else {
         DisableItem(gFileMenu, iNew);
         DisableItem(gFileMenu, iOpen);
+    }
+
+    if (haveDocument) {
+        EnableItem(gFileMenu, iClose);
+        EnableItem(gFileMenu, iSave);
+        EnableItem(gFileMenu, iSaveAs);
+        EnableItem(gFileMenu, iPageSetup);
+        EnableItem(gFileMenu, iPrint);
+    } else {
+        DisableItem(gFileMenu, iClose);
+        DisableItem(gFileMenu, iSave);
+        DisableItem(gFileMenu, iSaveAs);
+        DisableItem(gFileMenu, iPageSetup);
+        DisableItem(gFileMenu, iPrint);
     }
 }
 
@@ -333,8 +356,24 @@ void SyncMenusToFrontDocument(void)
     DocumentPtr doc = FrontDocument();
     short i;
 
-    if (doc == NULL)
+    if (doc == NULL) {
+        /* Nothing to act on -- these three menus are entirely
+           meaningless without a document (every item in them
+           ultimately resolves FrontDocument() with no NULL guard), so
+           the whole title is disabled rather than leaving individual
+           items enabled with nothing for them to do. Window menu is
+           left alone: RebuildWindowMenu already empties it when no
+           documents are open, so there's nothing here to check or
+           uncheck either way. */
+        DisableItem(gEditMenu, 0);
+        DisableItem(gStyleMenu, 0);
+        DisableItem(gViewMenu, 0);
         return;
+    }
+
+    EnableItem(gEditMenu, 0);
+    EnableItem(gStyleMenu, 0);
+    EnableItem(gViewMenu, 0);
 
     CheckItem(gViewMenu, iMarkdownView, !doc->hideMarkdown);
     CheckItem(gViewMenu, iWriterView, doc->hideMarkdown);
@@ -433,6 +472,8 @@ static void DoUpdate(WindowPtr w)
     if (doc != NULL) {
         TEUpdate(&w->portRect, doc->activeTE);
         DrawControls(w);
+        if (!doc->distractionFree)
+            DrawGrowIcon(w);
     }
     EndUpdate(w);
 }
@@ -491,33 +532,114 @@ static void CloseDocumentInteractive(DocumentPtr doc)
         }
     }
 
-    if (FrontDocument() == NULL) {
-        /* Last window just closed. MULTI_WINDOW_DESIGN.md's Milestone 0
-           decision checklist recommended falling back to the splash
-           screen for this case -- never actually confirmed by Pascal,
-           same unconfirmed-default flag as document.h's MAX_DOCUMENTS
-           and app.h's kDefaultWindowMargin. Mirrors main()'s own
-           startup sequence exactly: a fresh blank document, its first
-           paint forced the same way main() has to and for the same
-           reason (see the comment on that DoUpdate call in main()),
-           then the splash offering New/Open into it. */
-        DocumentPtr freshDoc = CreateNewDocument();
-
-        if (freshDoc != NULL) {
-            RebuildWindowMenu();
-            DoUpdate(freshDoc->window);
-            ShowSplashScreen();
-            UpdateFileMenuState();
-        }
-    }
+    /* No "last window closed" fallback -- per explicit request, having
+       no window open at all is a permitted, ordinary state, not one
+       this app papers over by conjuring a fresh blank document and a
+       New/Open dialog on top of it. UpdateFileMenuState (above) and
+       SyncMenusToFrontDocument (below) already handle a NULL
+       FrontDocument() correctly (File > New/Open/Quit stay live,
+       everything document-specific -- Close/Save/Page Setup/Print and
+       the whole Edit/Style/View menus -- disables itself), so there's
+       nothing left to do here once the window itself is gone. */
 
     /* Reflects whichever document is front by this point -- another
-       already-open one, the fresh fallback document if the splash's
-       New button was chosen, or yet another document if Open was
-       chosen instead (DoOpenFile, file.c, does its own RebuildWindowMenu/
-       SyncMenusToFrontDocument too, so this is redundant-but-harmless
-       in that specific case, not a gap). */
+       already-open one, or none at all if that was the last window. */
     SyncMenusToFrontDocument();
+}
+
+/*
+    Handles a click in a window's grow icon (inGrow, EventLoop below).
+    Only ever reachable for documentProc chrome -- plainDBox (Distraction
+    Free) windows have no grow icon at all, so FindWindow never reports
+    inGrow for one; the doc->distractionFree guard here is a defensive
+    belt-and-suspenders check, not a path this is actually expected to
+    take in practice.
+
+    Growing a background window is treated the same way the inContent
+    branch below already treats a background content click: select and
+    stop, don't act on this event. Necessary here specifically because
+    ResizeDocument's own AdjustScrollbar call (scrolling.c) self-
+    resolves its target via FrontDocument() like every other document-
+    mutating call in this codebase -- growing a non-frontmost window
+    without this guard would silently resize whichever document
+    happens to be front instead of the one actually dragged.
+
+    GrowWindow live-tracks the drag itself (the rubber-band outline)
+    and returns once the mouse button is released; a zero result means
+    the user dragged the size to nothing meaningfully different (or
+    let go without moving), matching GrowWindow's own documented
+    convention, and is treated as a no-op rather than resizing to 0x0.
+    kMinWindowWidth/kMinWindowHeight (app.h) floor the drag; the
+    screen's own current size (recomputed here, same as
+    CreateNewDocument's own default-size logic) caps it -- neither is
+    tied to any particular document's content.
+*/
+static void DoGrow(WindowPtr w, Point startPt)
+{
+    DocumentPtr doc = DocumentForWindow(w);
+    Rect limits;
+    long growResult;
+    short maxWidth, maxHeight;
+
+    if (doc == NULL || doc->distractionFree)
+        return;
+
+    if (w != FrontWindow()) {
+        SelectWindow(w);
+        return;
+    }
+
+    maxWidth = (short) (qd.screenBits.bounds.right - qd.screenBits.bounds.left);
+    maxHeight = (short) (qd.screenBits.bounds.bottom - qd.screenBits.bounds.top
+                          - MENU_BAR_HEIGHT);
+
+    /* GrowWindow's limit rect repurposes the four Rect fields as
+       (minWidth, minHeight, maxWidth, maxHeight) rather than actual
+       screen coordinates -- a documented classic Mac oddity, not a
+       mistake; SetRect's own (left, top, right, bottom) parameter
+       order lines up with that directly. */
+    SetRect(&limits, kMinWindowWidth, kMinWindowHeight, maxWidth, maxHeight);
+
+    growResult = GrowWindow(w, startPt, &limits);
+    if (growResult != 0)
+        ResizeDocument(doc, LoWord(growResult), HiWord(growResult));
+}
+
+/*
+    Handles a click in a window's title-bar zoom box (inZoomIn/
+    inZoomOut, EventLoop below) -- same shape as DoGrow above, same
+    reasons for each guard: only ever reachable for zoomDocProc chrome
+    in practice (plainDBox/Distraction Free windows have no zoom box,
+    so FindWindow never reports inZoomIn/inZoomOut for one; the
+    doc->distractionFree check is defensive, not a path expected to be
+    taken), and background-window protection for the identical reason
+    DoGrow needs it -- ZoomDocument's own geometry sync
+    (SyncDocumentGeometry, document.c) ends by calling AdjustScrollbar,
+    which resolves its target via FrontDocument() like every other
+    document-mutating call in this codebase, so zooming a non-frontmost
+    window without this guard would silently resize whichever document
+    happens to be front instead of the one actually clicked.
+
+    TrackBox live-tracks the click the way GrowWindow live-tracks a
+    grow drag -- highlighting the box while the mouse stays down inside
+    it, returning false if the mouse is released outside it (a
+    cancelled click) or true if released back inside (a confirmed one).
+    Only a confirmed click actually zooms.
+*/
+static void DoZoomBox(WindowPtr w, Point startPt, short part)
+{
+    DocumentPtr doc = DocumentForWindow(w);
+
+    if (doc == NULL || doc->distractionFree)
+        return;
+
+    if (w != FrontWindow()) {
+        SelectWindow(w);
+        return;
+    }
+
+    if (TrackBox(w, startPt, part))
+        ZoomDocument(doc, part);
 }
 
 /*
@@ -595,6 +717,8 @@ static void DoMenuCommand(long menuResult)
             case iClose: CloseDocumentInteractive(FrontDocument()); break;
             case iSave:   DoSave(); break;
             case iSaveAs: DoSaveAs(); break;
+            case iPageSetup: DoPageSetup(); break;
+            case iPrint:     DoPrint(); break;
             case iQuit:
                 if (ConfirmDiscardChangesForAllDocuments())
                     gDone = true;
@@ -608,53 +732,59 @@ static void DoMenuCommand(long menuResult)
            work. Left as-is (Milestone 8) -- worth doing eventually,
            deliberately out of scope for the Apple-menu/desk-accessory
            pass that added SystemTask/SystemEvent/SystemClick above. */
-        switch (menuItem) {
-            case iUndo:      DoUndo(); break;
-            case iRedo:      DoRedo(); break;
-            case iCut:       DoCut(); break;
-            case iCopy:      DoCopy(); break;
-            case iPaste:     DoPaste(); break;
-            case iSelectAll: DoSelectAll(); break;
+        if (doc != NULL) {
+            switch (menuItem) {
+                case iUndo:      DoUndo(); break;
+                case iRedo:      DoRedo(); break;
+                case iCut:       DoCut(); break;
+                case iCopy:      DoCopy(); break;
+                case iPaste:     DoPaste(); break;
+                case iSelectAll: DoSelectAll(); break;
+            }
         }
     } else if (menuID == mStyle) {
-        doc->dirty = true;
-        PushUndoSnapshot();
-        doc->typingRunActive = false;
-        if (doc->hideMarkdown) {
-            switch (menuItem) {
-                case iBold:   ToggleFace(bold); break;
-                case iItalic: ToggleFace(italic); break;
-                case iCode:   ToggleCode(); break;
-                case iStrike: break; /* no native strikethrough on classic Mac text styles */
-                case iH1:     ToggleHeadingHidden(1); break;
-                case iH2:     ToggleHeadingHidden(2); break;
-                case iH3:     ToggleHeadingHidden(3); break;
-                case iLink:   DoLinkHidden(); break;
-                case iNone:   ClearSelectionStyleHidden(); break;
+        if (doc != NULL) {
+            doc->dirty = true;
+            PushUndoSnapshot();
+            doc->typingRunActive = false;
+            if (doc->hideMarkdown) {
+                switch (menuItem) {
+                    case iBold:   ToggleFace(bold); break;
+                    case iItalic: ToggleFace(italic); break;
+                    case iCode:   ToggleCode(); break;
+                    case iStrike: break; /* no native strikethrough on classic Mac text styles */
+                    case iH1:     ToggleHeadingHidden(1); break;
+                    case iH2:     ToggleHeadingHidden(2); break;
+                    case iH3:     ToggleHeadingHidden(3); break;
+                    case iLink:   DoLinkHidden(); break;
+                    case iNone:   ClearSelectionStyleHidden(); break;
+                }
+            } else {
+                switch (menuItem) {
+                    case iBold:   WrapSelection("**", "**"); break;
+                    case iItalic: WrapSelection("*", "*"); break;
+                    case iCode:   WrapSelection("`", "`"); break;
+                    case iStrike: WrapSelection("~~", "~~"); break;
+                    case iH1:     ApplyHeading(1); break;
+                    case iH2:     ApplyHeading(2); break;
+                    case iH3:     ApplyHeading(3); break;
+                    case iLink:   DoLink(); break;
+                    case iNone:   ClearMarkdownInSelection(); break;
+                }
+                ClearStyles();
             }
-        } else {
-            switch (menuItem) {
-                case iBold:   WrapSelection("**", "**"); break;
-                case iItalic: WrapSelection("*", "*"); break;
-                case iCode:   WrapSelection("`", "`"); break;
-                case iStrike: WrapSelection("~~", "~~"); break;
-                case iH1:     ApplyHeading(1); break;
-                case iH2:     ApplyHeading(2); break;
-                case iH3:     ApplyHeading(3); break;
-                case iLink:   DoLink(); break;
-                case iNone:   ClearMarkdownInSelection(); break;
-            }
-            ClearStyles();
+            AdjustScrollbar();
         }
-        AdjustScrollbar();
     } else if (menuID == mView) {
-        switch (menuItem) {
-            case iMarkdownView:    SetViewMode(false); break;
-            case iWriterView:      SetViewMode(true); break;
-            case iDistractionFree: SetDistractionFree(doc, !doc->distractionFree); break;
-            case iZoomIn:          DoZoom(1); break;
-            case iZoomOut:         DoZoom(-1); break;
-            case iZoomDefault:     DoZoomReset(); break;
+        if (doc != NULL) {
+            switch (menuItem) {
+                case iMarkdownView:    SetViewMode(false); break;
+                case iWriterView:      SetViewMode(true); break;
+                case iDistractionFree: SetDistractionFree(doc, !doc->distractionFree); break;
+                case iZoomIn:          DoZoom(1); break;
+                case iZoomOut:         DoZoom(-1); break;
+                case iZoomDefault:     DoZoomReset(); break;
+            }
         }
     /* Help menu disabled for now (see MakeMenu) -- About lives in the
        Apple menu's iAbout branch above instead. Unreachable since
@@ -826,6 +956,17 @@ static void EventLoop(void)
                            also brings it forward. */
                         SelectWindow(w);
                         DragWindow(w, event.where, &qd.screenBits.bounds);
+                        /* Keeps a later zoom-in returning to the right
+                           place, not just the right size -- see
+                           RecordWindowUserState's own comment
+                           (document.c). No-ops harmlessly for a
+                           plainDBox (Distraction Free) window, which
+                           has no WStateData to update. */
+                        RecordWindowUserState(DocumentForWindow(w));
+                    } else if (part == inGrow) {
+                        DoGrow(w, event.where);
+                    } else if (part == inZoomIn || part == inZoomOut) {
+                        DoZoomBox(w, event.where, part);
                     }
                     break;
 

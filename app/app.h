@@ -30,9 +30,9 @@
 
     Still a compile-time constant, not a real preference -- genuinely
     should become one (a per-user saved setting, the same way zoom
-    already is via kZoomPrefType/kZoomPrefID in zoom.c), just not part
-    of this pass. Flagging rather than building preference storage
-    unasked.
+    already is via kZoomPrefType/kWriterZoomPrefID/kMarkdownZoomPrefID
+    in zoom.c), just not part of this pass. Flagging rather than
+    building preference storage unasked.
 */
 #define MARGIN_H     8
 #define MARGIN_TOP   8
@@ -57,7 +57,9 @@
 #define iClose   3
 #define iSave    4
 #define iSaveAs  5
-#define iQuit    7
+#define iPageSetup 7
+#define iPrint     8
+#define iQuit      10
 
 /*
     Default document window sizing (Milestone 3). Deliberately NOT a
@@ -75,6 +77,22 @@
 */
 #define kDefaultWindowMargin  40
 #define kWindowStagger        20
+
+/*
+    Grow (resize) limits for document-view windows -- see main.c's
+    inGrow handling and document.c's ResizeDocument. Small enough to
+    stay usable on the 512x342 target screen this project targets
+    (margins + scrollbar + a handful of visible lines), not tied to
+    any particular content. The upper bound is the screen itself
+    (computed at grow time from qd.screenBits.bounds, same as
+    CreateNewDocument's own default-size computation), not a fixed
+    constant here.
+*/
+#define kMinWindowWidth   200
+#define kMinWindowHeight  120
+
+#define zoomDocProc 8
+#define zoomNoGrow  12
 
 #define mEdit    131
 #define iUndo    1
@@ -141,8 +159,9 @@
 #define kNumZoomLevels 5
 #define kZoomBaselineIndex 2
 
-#define kZoomPrefType 'ZLvl'
-#define kZoomPrefID   128
+#define kZoomPrefType       'ZLvl'
+#define kWriterZoomPrefID   128
+#define kMarkdownZoomPrefID 129
 
 /*
     Global state -- actual storage lives in main.c. Per-document state
@@ -150,18 +169,24 @@
     gActiveTE/gScrollBar/gDirty/etc.) moved into DocumentRecord -- see
     document.h -- and is reached via FrontDocument()/DocumentForWindow(),
     not as bare globals, as of this milestone. What's left here is
-    genuinely app-wide: gDone (should the app quit), the two shared menu
-    handles (menus are app-wide UI, not per-document), and gZoomIndex
-    (zoom stays a single app-wide preference by design, not a per-
-    document setting -- see MULTI_WINDOW_DESIGN.md §10's zoom.c note).
+    genuinely app-wide: gDone (should the app quit), the shared menu
+    handles (menus are app-wide UI, not per-document), and the zoom
+    indices (zoom stays a pair of single app-wide preferences by
+    design, not per-document settings -- see MULTI_WINDOW_DESIGN.md
+    §10's zoom.c note -- but Writer and Markdown zoom are independent
+    of each other as of the printing-support pass: styled prose and
+    raw monospace source are different use cases with no reason to
+    share one size).
 */
 extern Boolean gDone;
 extern MenuHandle gAppleMenu;
 extern MenuHandle gFileMenu;
 extern MenuHandle gViewMenu;
 extern MenuHandle gEditMenu;
+extern MenuHandle gStyleMenu;
 extern MenuHandle gWindowMenu;
-extern short gZoomIndex;
+extern short gWriterZoomIndex;
+extern short gMarkdownZoomIndex;
 
 /* main.c */
 void UpdateMenuBarLook(void);
@@ -209,7 +234,8 @@ void DoPaste(void);
 void DoSelectAll(void);
 
 /* zoom.c */
-short CurrentFontSize(void);
+short CurrentWriterFontSize(void);
+short CurrentMarkdownFontSize(void);
 void LoadZoomPref(void);
 void DoZoom(short direction);
 void DoZoomReset(void);

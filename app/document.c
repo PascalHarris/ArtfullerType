@@ -2,6 +2,35 @@
 
 DocumentRecord gDocuments[MAX_DOCUMENTS];
 
+/* No WStateDataHandle typedef exists in this toolchain's generated
+   headers -- WStateData itself is declared (defs/WindowMgr.yaml), but
+   not a handle-to-it name, the same gap as zoomDocProc in app.h.
+   Defined here, file-local: only BuildWindowChrome/RecordWindowUserState
+   below need pointer-level access to a window's WStateData; nothing
+   outside this file does. */
+typedef WStateData **WStateDataHandle;
+
+/*
+    The single "standard" size every document's zoom box grows to --
+    deliberately NOT CreateNewDocument's own per-slot staggered bounds
+    (see BuildWindowChrome's zoom-setup comment below for why): same
+    screen-inset-by-kDefaultWindowMargin math as CreateNewDocument's
+    own default sizing, just without the stagger offset, since a
+    "standard" size that differs by which document slot you happen to
+    be in would be a strange thing for "standard" to mean.
+*/
+static void ComputeStandardBounds(Rect *out)
+{
+    SetRect(out, 0, 0,
+            (short) ((qd.screenBits.bounds.right - qd.screenBits.bounds.left)
+                      - (kDefaultWindowMargin * 2)),
+            (short) ((qd.screenBits.bounds.bottom - qd.screenBits.bounds.top
+                       - MENU_BAR_HEIGHT) - (kDefaultWindowMargin * 2)));
+    OffsetRect(out,
+        qd.screenBits.bounds.left + kDefaultWindowMargin,
+        qd.screenBits.bounds.top + MENU_BAR_HEIGHT + kDefaultWindowMargin);
+}
+
 /*
     Deviation from MULTI_WINDOW_DESIGN.md's original sketch: the design
     doc suggested SetWRefCon/GetWRefCon for O(1) window-to-document
@@ -80,28 +109,71 @@ static void BuildWindowChrome(DocumentPtr doc, Rect *bounds, short proc,
                                Boolean visible, Rect *outViewRect)
 {
     Rect sbRect;
+    short bottomInset;
+    /* documentProc/zoomDocProc windows have a Window-Manager-reserved
+       grow icon in the bottom-right corner (FindWindow reports clicks
+       there as inGrow, handled in main.c's EventLoop via
+       ResizeDocument below) -- plainDBox (Distraction Free) windows
+       have no such region. zoomDocProc keeps the grow box that
+       documentProc has (see app.h's zoomDocProc comment: it's
+       documentProc's same variation bits plus the zoom-box bit, not a
+       different family), so this check stays "not plainDBox" rather
+       than naming one specific growable procID. */
+    Boolean growable = (proc != plainDBox);
 
     doc->window = NewWindow(NULL, bounds, "\p", true, proc,
                              (WindowPtr) -1L, visible, 0);
     SetPort(doc->window);
 
     /*
-        Scrollbar first, flush against the window's right edge and
-        spanning the full window height -- the standard Mac layout
-        (e.g. TeachText). The 1px overlap on all three outer edges
-        (right/top/bottom) is the usual classic-Mac convention so the
-        control's own frame blends with the window's, rather than
+        Scrollbar flush against the window's right edge and top, the
+        standard Mac layout (e.g. TeachText). The 1px overlap on the
+        right/top outer edges is the usual classic-Mac convention so
+        the control's own frame blends with the window's, rather than
         leaving a visible 1px gap.
+
+        The bottom edge is flush too for plainDBox chrome (no grow
+        icon to avoid), but for growable chrome it stops
+        SCROLLBAR_WIDTH short of the window bottom -- reusing the
+        scrollbar's own width as the inset, the usual size for the
+        square corner tile the grow icon occupies, so the corner lines
+        up cleanly with both the scrollbar and (once there's a
+        horizontal scrollbar, if this app ever gets one) itself.
+        Without this inset the down arrow sits exactly in the grow
+        icon's hot zone and never receives clicks, since FindWindow
+        claims that whole corner as inGrow before this app's own
+        content-click handling ever runs.
 
         Text viewRect is then inset from the scrollbar's left edge on
         the right (not from the window's raw right edge), so text
-        never runs underneath it. Left/top/bottom use the small
-        MARGIN_H/MARGIN_TOP/MARGIN_BOTTOM text margins (see app.h).
+        never runs underneath it. Left/top use the small MARGIN_H/
+        MARGIN_TOP text margins (see app.h). Bottom uses the LARGER of
+        MARGIN_BOTTOM and (for growable chrome) the same
+        SCROLLBAR_WIDTH inset the scrollbar itself uses -- a real bug
+        lived here until this fix: bottom used to be inset by
+        MARGIN_BOTTOM alone (8px) regardless of chrome, leaving 8px of
+        the grow icon's reserved 16px-tall corner strip still inside
+        the text viewRect. Text drawn there wasn't visually corrupting
+        the *scrollbar* control itself (the two never overlap in X),
+        but sat inside that reserved corner where nothing ever
+        proactively erases it except a full-window update
+        (DrawGrowIcon, main.c's DoUpdate) -- a TEScroll (which doesn't
+        trigger DrawGrowIcon at all) just carried those stray pixels
+        along with the rest of the scrolled content, exactly matching
+        the reported "fragments of text scroll with the scrollbar"
+        symptom. DrawGrowIcon repainting on top of it was never a real
+        fix for that gap, only for the one small 13x13 icon glyph
+        within it.
     */
+    bottomInset = growable ? SCROLLBAR_WIDTH : MARGIN_BOTTOM;
+    if (bottomInset < MARGIN_BOTTOM)
+        bottomInset = MARGIN_BOTTOM;
+
     sbRect.right = doc->window->portRect.right + 1;
     sbRect.left = sbRect.right - SCROLLBAR_WIDTH;
     sbRect.top = doc->window->portRect.top - 1;
-    sbRect.bottom = doc->window->portRect.bottom + 1;
+    sbRect.bottom = doc->window->portRect.bottom + 1
+                     - (growable ? SCROLLBAR_WIDTH : 0);
     doc->scrollBar = NewControl(doc->window, &sbRect, "\p", false, 0, 0, 0, scrollBarProc, 0);
     doc->scrollBarVisible = false;
 
@@ -109,7 +181,40 @@ static void BuildWindowChrome(DocumentPtr doc, Rect *bounds, short proc,
     outViewRect->left += MARGIN_H;
     outViewRect->right -= (SCROLLBAR_WIDTH + MARGIN_H);
     outViewRect->top += MARGIN_TOP;
-    outViewRect->bottom -= MARGIN_BOTTOM;
+    outViewRect->bottom -= bottomInset;
+
+    /*
+        Zoom box setup: the Window Manager allocates doc->window's
+        WStateData record automatically as part of NewWindow for any
+        zoom-box procID (standard, ROM-level Window Manager behavior,
+        not something this toolchain's generator declares one way or
+        the other -- there's nothing to grep for in a trap-table
+        definition; noted here as the one piece of this feature I
+        could confirm only against long-standing documented Toolbox
+        behavior, not against this specific toolchain's own source,
+        the way zoomDocProc's numeric value itself was above). Guarded
+        with a NULL check regardless, both here and at every other
+        point this app touches dataHandle, in case that assumption
+        turns out wrong on this particular runtime.
+
+        userState (the size/position a zoom-in returns to) starts as
+        the window's own just-created bounds; RecordWindowUserState
+        (below) keeps it current across every later manual grow or
+        drag. stdState (what a zoom-out grows to) is a single fixed
+        "standard" size shared by every document -- ComputeStandardBounds
+        below, deliberately NOT CreateNewDocument's own per-slot
+        staggered bounds, since every document zooming out to a
+        different, offset size would be a strange standard for
+        "standard" to mean.
+    */
+    if (growable) {
+        WStateDataHandle wsH = (WStateDataHandle) ((WindowPeek) doc->window)->dataHandle;
+
+        if (wsH != NULL) {
+            (**wsH).userState = *bounds;
+            ComputeStandardBounds(&(**wsH).stdState);
+        }
+    }
 }
 
 /*
@@ -169,14 +274,17 @@ DocumentPtr CreateNewDocument(void)
     if (bounds.bottom > qd.screenBits.bounds.bottom)
         OffsetRect(&bounds, 0, qd.screenBits.bounds.bottom - bounds.bottom);
 
-    BuildWindowChrome(doc, &bounds, documentProc, true, &viewRect);
+    BuildWindowChrome(doc, &bounds, zoomDocProc, true, &viewRect);
 
     GetFNum("\pTimes", &fontNum);
     TextFont(fontNum);
-    TextSize(CurrentFontSize());
 
+    TextSize(CurrentMarkdownFontSize());
     doc->te = TEStyleNew(&viewRect, &viewRect);
+
+    TextSize(CurrentWriterFontSize());
     doc->hiddenTE = TEStyleNew(&viewRect, &viewRect);
+
     doc->hideMarkdown = true;
     doc->activeTE = doc->hideMarkdown ? doc->hiddenTE : doc->te;
     TEActivate(doc->activeTE);
@@ -191,6 +299,8 @@ DocumentPtr CreateNewDocument(void)
     doc->typingRunActive = false;
 
     doc->linkCount = 0;
+
+    doc->printRecord = NULL;
 
     doc->cachedTotalHeightNLines = -1;
     doc->cachedCaretLine = -1;
@@ -208,6 +318,7 @@ DocumentPtr CreateNewDocument(void)
     doc->inUse = true;
 
     UpdateWindowTitle(doc);
+    AdjustScrollbar();
 
     return doc;
 }
@@ -287,7 +398,7 @@ void ReHouseDocument(DocumentPtr doc, Boolean toDistractionFree)
     DisposeWindow(doc->window);
 
     BuildWindowChrome(doc, &newBounds,
-                       toDistractionFree ? plainDBox : documentProc,
+                       toDistractionFree ? plainDBox : zoomDocProc,
                        true, &viewRect);
 
     (**doc->te).viewRect = viewRect;
@@ -303,6 +414,170 @@ void ReHouseDocument(DocumentPtr doc, Boolean toDistractionFree)
     InvalidateHeightCache();
     AdjustScrollbar();
     InvalRect(&doc->window->portRect);
+}
+
+/*
+    Resizes doc's window in place after the user drags its grow icon --
+    only ever called for zoomDocProc (document-view) windows, since
+    plainDBox (Distraction Free) windows have no grow icon and never
+    generate an inGrow event for main.c's EventLoop to call this from.
+
+    Deliberately does NOT go through BuildWindowChrome the way
+    ReHouseDocument does: that helper disposes and recreates the whole
+    window and scrollbar, appropriate for a chrome-TYPE change (a rare
+    action where the momentary flash and change of WindowPtr identity
+    don't matter), but wrong here -- GrowWindow (main.c) has already
+    live-tracked the drag and returned a final size, so this only needs
+    to apply that size to the window and its existing scrollbar/TE
+    records in place, via SizeWindow/MoveControl/SizeControl rather
+    than DisposeWindow+NewWindow+NewControl.
+
+    Same scrollbar-geometry math as BuildWindowChrome's growable branch
+    (flush right/top, inset SCROLLBAR_WIDTH off the bottom for the grow
+    icon) and the same viewRect-margin math as its outViewRect -- kept
+    in sync by hand rather than factored out, since BuildWindowChrome's
+    version has to *create* a control (NewControl) while this one has
+    to *move* an existing one (MoveControl/SizeControl), which are
+    different enough calls that sharing one helper would need its own
+    create-vs-move branch anyway; not worth it for two small rects.
+
+    The part after doc->window's frame is already at its final size --
+    everything from SetPort onward -- is shared with ZoomDocument
+    below (ZoomWindow resizes the window itself exactly as SizeWindow
+    does here, just via a different Toolbox call and a different
+    source for the target size), factored out as SyncDocumentGeometry
+    so the two don't duplicate this math a second time.
+*/
+static void SyncDocumentGeometry(DocumentPtr doc)
+{
+    Rect sbRect, viewRect;
+    short savedSelStart, savedSelEnd;
+
+    savedSelStart = (**doc->activeTE).selStart;
+    savedSelEnd = (**doc->activeTE).selEnd;
+
+    SetPort(doc->window);
+
+    sbRect.right = doc->window->portRect.right + 1;
+    sbRect.left = sbRect.right - SCROLLBAR_WIDTH;
+    sbRect.top = doc->window->portRect.top - 1;
+    sbRect.bottom = doc->window->portRect.bottom + 1 - SCROLLBAR_WIDTH;
+    MoveControl(doc->scrollBar, sbRect.left, sbRect.top);
+    SizeControl(doc->scrollBar, (short) (sbRect.right - sbRect.left),
+                (short) (sbRect.bottom - sbRect.top));
+
+    /* Same SCROLLBAR_WIDTH-for-the-grow-icon bottom inset as
+       BuildWindowChrome, unconditionally here -- this function (like
+       ResizeDocument/ZoomDocument, its only two callers) is only ever
+       reached for growable/zoomDocProc chrome, so there's no plainDBox
+       case to branch on the way BuildWindowChrome has to. Same real
+       bug this fixes too: MARGIN_BOTTOM alone used to leave 8px of the
+       grow icon's reserved corner inside the text viewRect. */
+    viewRect = doc->window->portRect;
+    viewRect.left += MARGIN_H;
+    viewRect.right -= (SCROLLBAR_WIDTH + MARGIN_H);
+    viewRect.top += MARGIN_TOP;
+    viewRect.bottom -= SCROLLBAR_WIDTH;
+
+    (**doc->te).viewRect = viewRect;
+    (**doc->te).destRect = viewRect;
+    (**doc->hiddenTE).viewRect = viewRect;
+    (**doc->hiddenTE).destRect = viewRect;
+    TECalText(doc->te);
+    TECalText(doc->hiddenTE);
+    TESetSelect(savedSelStart, savedSelEnd, doc->activeTE);
+
+    InvalidateHeightCache();
+    AdjustScrollbar();
+    InvalRect(&doc->window->portRect);
+}
+
+void ResizeDocument(DocumentPtr doc, short newWidth, short newHeight)
+{
+    if (doc == NULL)
+        return;
+
+    SizeWindow(doc->window, newWidth, newHeight, true);
+    SyncDocumentGeometry(doc);
+
+    /* A manual grow always updates userState, whether or not the
+       window happened to be at its zoomed/standard size beforehand --
+       the standard classic Mac convention (Inside Macintosh's own
+       zoom-box sample code does the same): growing effectively
+       establishes a new custom size going forward, so the NEXT zoom-in
+       click restores THIS size, not whatever the window's size was
+       before this grow. */
+    RecordWindowUserState(doc);
+}
+
+/*
+    The zoom-box counterpart to DoGrow/ResizeDocument above -- called
+    from main.c's DoZoomBox once TrackBox confirms the click landed
+    (and was released) on the zoom box. part is whichever of
+    inZoomIn/inZoomOut FindWindow/TrackBox reported; ZoomWindow uses it
+    directly to pick userState or stdState as the target, so this
+    doesn't need its own "which direction" bookkeeping the way some
+    apps track a separate zoomed/unzoomed flag for -- the click itself
+    already answers that.
+
+    EraseRect on the OLD portRect before ZoomWindow, not after: if this
+    zoom is shrinking the window, nothing else erases the pixels
+    outside the new, smaller bounds -- the standard Inside Macintosh
+    ordering for exactly this reason. front=true matches DoZoomBox's
+    own w != FrontWindow() guard, which already ensures this is only
+    ever called for the frontmost window.
+
+    Deliberately does NOT call RecordWindowUserState -- unlike
+    ResizeDocument's manual grow, a zoom action must leave userState
+    alone so the round trip stays reversible: zoom out, then zoom back
+    in, returns to exactly the size/position this zoom started from,
+    not to whatever the zoom itself just produced.
+*/
+void ZoomDocument(DocumentPtr doc, short part)
+{
+    if (doc == NULL)
+        return;
+
+    SetPort(doc->window);
+    EraseRect(&doc->window->portRect);
+    ZoomWindow(doc->window, part, true);
+    SyncDocumentGeometry(doc);
+}
+
+/*
+    Records doc->window's current bounds as its WStateData userState --
+    called after every manual grow (ResizeDocument above) and drag
+    (main.c's inDrag handling) so a later zoom-in restores wherever the
+    user actually left the window, not a stale size/position from
+    whenever it was first created or last zoomed.
+
+    portRect is in LOCAL (window-relative) coordinates -- WStateData's
+    rects need to be in GLOBAL (screen) coordinates, the same space
+    ZoomWindow repositions the window in, so this converts via
+    LocalToGlobal on both corners first. Same technique
+    ReHouseDocument's own standardBounds capture (above in this file)
+    already uses for the identical reason.
+
+    No-ops (rather than crashing) if dataHandle is NULL -- plainDBox
+    (Distraction Free) windows have no WStateData at all, and this is
+    called unconditionally after every drag regardless of chrome type,
+    so that's the ordinary case for a DF window, not an error.
+*/
+void RecordWindowUserState(DocumentPtr doc)
+{
+    WStateDataHandle wsH;
+
+    if (doc == NULL)
+        return;
+
+    wsH = (WStateDataHandle) ((WindowPeek) doc->window)->dataHandle;
+    if (wsH != NULL) {
+        Rect globalBounds = doc->window->portRect;
+
+        LocalToGlobal((Point *) &globalBounds.top);
+        LocalToGlobal((Point *) &globalBounds.bottom);
+        (**wsH).userState = globalBounds;
+    }
 }
 
 /*
@@ -325,6 +600,11 @@ void CloseDocument(DocumentPtr doc)
 
     TEDispose(doc->te);
     TEDispose(doc->hiddenTE);
+    /* Guarded: a document that never opened Page Setup or Print never
+       allocated a print record (EnsurePrintRecord, print.c) in the
+       first place. */
+    if (doc->printRecord != NULL)
+        DisposeHandle((Handle) doc->printRecord);
     /* DisposeWindow also disposes doc->scrollBar -- a Control Manager
        control is owned by its window and goes with it; no separate
        DisposeControl needed or correct here. */
@@ -335,5 +615,6 @@ void CloseDocument(DocumentPtr doc)
     doc->hiddenTE = NULL;
     doc->activeTE = NULL;
     doc->scrollBar = NULL;
+    doc->printRecord = NULL;
     doc->inUse = false;
 }

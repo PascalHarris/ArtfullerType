@@ -88,7 +88,12 @@ void UpdateScrollbarRange(void)
     if (maxVal != GetControlMaximum(doc->scrollBar))
         SetControlMaximum(doc->scrollBar, maxVal);
 
-    shouldShow = (maxVal > 0);
+    /* Hiding the scrollbar when there's nothing to scroll is part of
+       Distraction Free's minimal chrome -- document view always shows
+       it, full stop, matching every other standard Mac document
+       window (a scrollbar with nothing to do just looks inactive,
+       same as e.g. a disabled control -- it isn't hidden). */
+    shouldShow = doc->distractionFree ? (maxVal > 0) : true;
     if (shouldShow != doc->scrollBarVisible) {
         if (shouldShow)
             ShowControl(doc->scrollBar);

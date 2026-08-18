@@ -25,6 +25,12 @@ void UpdateEditMenuState(void)
 {
     DocumentPtr doc = FrontDocument();
 
+    if (doc == NULL) {
+        DisableItem(gEditMenu, iUndo);
+        DisableItem(gEditMenu, iRedo);
+        return;
+    }
+
     EnableItem(gEditMenu, iUndo);
     EnableItem(gEditMenu, iRedo);
     if (doc->undoCount == 0)
@@ -148,7 +154,7 @@ void DoUndo(void)
     DocumentPtr doc = FrontDocument();
     UndoSnapshot snap;
 
-    if (doc->undoCount == 0)
+    if (doc == NULL || doc->undoCount == 0)
         return;
 
     PushRedoSnapshot(doc);
@@ -166,7 +172,7 @@ void DoRedo(void)
     DocumentPtr doc = FrontDocument();
     UndoSnapshot snap;
 
-    if (doc->redoCount == 0)
+    if (doc == NULL || doc->redoCount == 0)
         return;
 
     /* Take the redo entry before pushing onto undo -- PushUndoSnapshot
@@ -189,6 +195,9 @@ void DoCut(void)
     short selStart, selEnd;
     long selLen;
     Handle scrapText;
+
+    if (doc == NULL)
+        return;
 
     selStart = (**doc->activeTE).selStart;
     selEnd = (**doc->activeTE).selEnd;
@@ -231,6 +240,9 @@ void DoCopy(void)
     long selLen;
     Handle scrapText;
 
+    if (doc == NULL)
+        return;
+
     selStart = (**doc->activeTE).selStart;
     selEnd = (**doc->activeTE).selEnd;
     if (selStart == selEnd)
@@ -264,6 +276,9 @@ void DoPaste(void)
     long offset;
     long len;
 
+    if (doc == NULL)
+        return;
+
     scrapH = NewHandle(0);
     len = GetScrap(scrapH, 'TEXT', &offset);
     if (len <= 0) {
@@ -291,6 +306,9 @@ void DoPaste(void)
 void DoSelectAll(void)
 {
     DocumentPtr doc = FrontDocument();
+
+    if (doc == NULL)
+        return;
 
     TESetSelect(0, 32767, doc->activeTE);
     doc->typingRunActive = false;

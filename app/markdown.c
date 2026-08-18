@@ -25,10 +25,10 @@ void ClearStyles(void)
     short savedStart = (**doc->te).selStart;
     short savedEnd = (**doc->te).selEnd;
 
-    GetFNum("\pTimes", &fontNum);
+    GetFNum("\pMonaco", &fontNum);
     ts.tsFont = fontNum;
     ts.tsFace = normal;
-    ts.tsSize = CurrentFontSize();
+    ts.tsSize = CurrentMarkdownFontSize();
     ts.tsColor.red = ts.tsColor.green = ts.tsColor.blue = 0;
 
     TESetSelect(0, 32767, doc->te);
@@ -242,7 +242,7 @@ void BuildHiddenView(void)
     GetFNum("\pTimes", &fontNum);
     ts.tsFont = fontNum;
     ts.tsFace = normal;
-    ts.tsSize = CurrentFontSize();
+    ts.tsSize = CurrentWriterFontSize();
     ts.tsColor.red = ts.tsColor.green = ts.tsColor.blue = 0;
     TESetSelect(0, 32767, doc->hiddenTE);
     TESetStyle(doFont + doFace + doSize + doColor, &ts, true, doc->hiddenTE);
@@ -273,7 +273,7 @@ void BuildHiddenView(void)
                 break;
             case 'H':
                 opStyle.tsFace = bold;
-                opStyle.tsSize = CurrentFontSize() + (4 - ops[k].level) * 4;
+                opStyle.tsSize = CurrentWriterFontSize() + (4 - ops[k].level) * 4;
                 TESetStyle(doFace + doSize, &opStyle, true, doc->hiddenTE);
                 break;
         }
@@ -348,7 +348,7 @@ void SyncHiddenToCanonical(void)
                 short lvl;
 
                 for (lvl = 1; lvl <= 3; lvl++) {
-                    if (firstStyle.tsSize == CurrentFontSize() + (4 - lvl) * 4) {
+                    if (firstStyle.tsSize == CurrentWriterFontSize() + (4 - lvl) * 4) {
                         headingLevel = lvl;
                         isHeading = true;
                         break;
@@ -693,7 +693,7 @@ void InsertMarkdownAsStyled(Handle srcH, long srcLen, TEHandle te)
     GetFNum("\pTimes", &fontNum);
     baseStyle.tsFont = fontNum;
     baseStyle.tsFace = normal;
-    baseStyle.tsSize = CurrentFontSize();
+    baseStyle.tsSize = CurrentWriterFontSize();
     baseStyle.tsColor.red = baseStyle.tsColor.green = baseStyle.tsColor.blue = 0;
     TESetSelect(insertStart, (short) (insertStart + outLen), te);
     TESetStyle(doFont + doFace + doSize + doColor, &baseStyle, true, te);
@@ -1015,15 +1015,15 @@ void ToggleHeadingHidden(short level)
     HUnlock(textH);
 
     TEGetStyle((short) lineStart, &ts, &lh, &fa, doc->hiddenTE);
-    isThisLevel = (ts.tsFace & bold) && (ts.tsSize == CurrentFontSize() + (4 - level) * 4);
+    isThisLevel = (ts.tsFace & bold) && (ts.tsSize == CurrentWriterFontSize() + (4 - level) * 4);
 
     TESetSelect((short) lineStart, (short) lineEnd, doc->hiddenTE);
     if (isThisLevel) {
         ts.tsFace = normal;
-        ts.tsSize = CurrentFontSize();
+        ts.tsSize = CurrentWriterFontSize();
     } else {
         ts.tsFace = bold;
-        ts.tsSize = CurrentFontSize() + (4 - level) * 4;
+        ts.tsSize = CurrentWriterFontSize() + (4 - level) * 4;
     }
     TESetStyle(doFace + doSize, &ts, true, doc->hiddenTE);
 }
@@ -1043,7 +1043,7 @@ static void SetTypingStyleNormal(short pos)
     GetFNum("\pTimes", &fontNum);
     ts.tsFont = fontNum;
     ts.tsFace = normal;
-    ts.tsSize = CurrentFontSize();
+    ts.tsSize = CurrentWriterFontSize();
     TESetSelect(pos, pos, doc->hiddenTE);
     TESetStyle(doFont + doFace + doSize, &ts, true, doc->hiddenTE);
 }
@@ -1100,7 +1100,7 @@ void DetectInlineMarkdown(char justTyped)
             TEDelete(doc->hiddenTE);
             TESetSelect((short) lineStart, (short) lineStart, doc->hiddenTE);
             ts.tsFace = bold;
-            ts.tsSize = CurrentFontSize() + (4 - level) * 4;
+            ts.tsSize = CurrentWriterFontSize() + (4 - level) * 4;
             TESetStyle(doFace + doSize, &ts, true, doc->hiddenTE);
             InvalidateHeightCache();
             return;
@@ -1335,7 +1335,7 @@ void ClearSelectionStyleHidden(void)
     GetFNum("\pTimes", &fontNum);
     ts.tsFont = fontNum;
     ts.tsFace = normal;
-    ts.tsSize = CurrentFontSize();
+    ts.tsSize = CurrentWriterFontSize();
     ts.tsColor.red = ts.tsColor.green = ts.tsColor.blue = 0;
     TESetStyle(doFont + doFace + doSize + doColor, &ts, true, doc->hiddenTE);
 }

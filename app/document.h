@@ -98,6 +98,15 @@ typedef struct DocumentRecord {
     Str255 linkURLs[MAX_LINKS + 1];
     short linkCount;
 
+    /* Print Manager record for this document -- NULL until the first
+       Page Setup or Print (see print.c's EnsurePrintRecord). Lazily
+       allocated rather than built here at CreateNewDocument time: a
+       TPrint (120 bytes, per defs/PrintMgr.yaml) for every one of
+       MAX_DOCUMENTS slots whether or not that document is ever
+       printed is memory this app doesn't need to spend up front, per
+       PRINTING_DESIGN.md §2.1. Disposed in CloseDocument. */
+    THPrint printRecord;
+
     /* Moved from scrolling.c's file-static height caches -- per-TE-
        content caches, so leaving them as file-statics would make one
        document's cache silently apply to another's after a window
@@ -135,5 +144,8 @@ DocumentPtr CreateNewDocument(void);
 void CloseDocument(DocumentPtr doc);
 void UpdateWindowTitle(DocumentPtr doc);
 void ReHouseDocument(DocumentPtr doc, Boolean toDistractionFree);
+void ResizeDocument(DocumentPtr doc, short newWidth, short newHeight);
+void ZoomDocument(DocumentPtr doc, short part);
+void RecordWindowUserState(DocumentPtr doc);
 
 #endif

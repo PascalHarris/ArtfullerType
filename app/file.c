@@ -69,7 +69,7 @@ void SetViewMode(Boolean hideMarkdown)
 {
     DocumentPtr doc = FrontDocument();
 
-    if (hideMarkdown == doc->hideMarkdown)
+    if (doc == NULL || hideMarkdown == doc->hideMarkdown)
         return;
 
     ClearUndoRedoStacks();
@@ -225,6 +225,9 @@ Boolean DoSaveAs(void)
     SFReply reply;
     Point where = {100, 100};
 
+    if (doc == NULL)
+        return false;
+
     if (doc->hideMarkdown)
         SyncHiddenToCanonical();
 
@@ -255,6 +258,9 @@ Boolean DoSaveAs(void)
 Boolean DoSave(void)
 {
     DocumentPtr doc = FrontDocument();
+
+    if (doc == NULL)
+        return false;
 
     if (!doc->haveFile)
         return DoSaveAs();
