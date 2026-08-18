@@ -95,6 +95,14 @@ static void Init(void)
     port (global screen coordinates), not whatever window's port happens
     to be current, since the menu bar isn't part of any window.
 
+    Verified (not assumed) against Milestone 5's Distraction Free work:
+    the bar rect below is computed purely from qd.screenBits.bounds and
+    drawn into the Window Manager port -- it has no dependency on any
+    document's window bounds or chrome (documentProc vs. plainDBox), so
+    a document being distraction-free changes nothing about how this
+    function behaves. hideMarkdown (view mode: Writer vs. Markdown) and
+    distractionFree (window chrome) are genuinely orthogonal fields.
+
     Guards against FrontDocument() returning NULL: MakeMenu() below calls
     this once, before main()'s first CreateNewDocument() call has run
     and before any gDocuments slot is populated -- the only point in
@@ -146,7 +154,7 @@ static void MakeMenu(void)
     InsertMenu(styleMenu, 0);
 
     gViewMenu = NewMenu(mView, "\pView");
-    AppendMenu(gViewMenu, "\pMarkdown;Writer;(-;Zoom In/=;Zoom Out/-;Default Size/0");
+    AppendMenu(gViewMenu, "\pMarkdown;Writer;(-;Distraction Free;(-;Zoom In/=;Zoom Out/-;Default Size/0");
     InsertMenu(gViewMenu, 0);
     CheckItem(gViewMenu, iWriterView, true);
 
@@ -299,11 +307,57 @@ void SyncMenusToFrontDocument(void)
 
     CheckItem(gViewMenu, iMarkdownView, !doc->hideMarkdown);
     CheckItem(gViewMenu, iWriterView, doc->hideMarkdown);
+    CheckItem(gViewMenu, iDistractionFree, doc->distractionFree);
 
     UpdateEditMenuState();
 
     for (i = 1; i <= CountMItems(gWindowMenu); i++)
         CheckItem(gWindowMenu, i, (DocumentForWindowMenuItem(i) == doc));
+}
+
+/*
+    The single entry point for turning Distraction Free on or off for
+    one document, maintaining the invariant MULTI_WINDOW_DESIGN.md §8
+    states: "frontmost window distraction-free implies every other
+    open window hidden." ReHouseDocument (document.c) only rebuilds
+    doc's own window -- Milestone 5's whole scope; this wraps it with
+    the show/hide orchestration across every OTHER open document,
+    which is Milestone 6's actual deliverable. Called from the View
+    menu's Distraction Free toggle, from the Window-menu-switch-while-
+    DF-active swap (§8.1, below in DoMenuCommand), and from file.c's
+    DoNewFile/DoOpenFile exiting DF first (§8.2).
+
+    Establishes the whole invariant from scratch on every call rather
+    than computing a minimal diff from whatever the previous state
+    was. That means composing two calls back to back (as the §8.1 swap
+    does) briefly re-shows a document the second call is about to hide
+    again -- redundant Toolbox work, not a correctness issue -- traded
+    deliberately for every call site being built from the same simple,
+    independently-verifiable building block instead of a hand-optimized
+    one-off for the swap case.
+*/
+void SetDistractionFree(DocumentPtr doc, Boolean toDistractionFree)
+{
+    short i;
+
+    if (doc == NULL)
+        return;
+
+    ReHouseDocument(doc, toDistractionFree);
+
+    for (i = 0; i < MAX_DOCUMENTS; i++) {
+        DocumentPtr other = &gDocuments[i];
+
+        if (!other->inUse || other == doc)
+            continue;
+
+        if (toDistractionFree)
+            HideWindow(other->window);
+        else
+            ShowWindow(other->window);
+    }
+
+    SyncMenusToFrontDocument();
 }
 
 /*
@@ -367,6 +421,8 @@ static void DoUpdate(WindowPtr w)
 */
 static void CloseDocumentInteractive(DocumentPtr doc)
 {
+    Boolean wasDistractionFree;
+
     if (doc == NULL)
         return;
 
@@ -374,9 +430,35 @@ static void CloseDocumentInteractive(DocumentPtr doc)
     if (!ConfirmDiscardChanges())
         return;
 
+    wasDistractionFree = doc->distractionFree;
+
     CloseDocument(doc);
     RebuildWindowMenu();
     UpdateFileMenuState();
+
+    if (wasDistractionFree) {
+        /* §8.3 interaction the design doc's own three don't spell out:
+           the just-closed document was the one Distraction Free
+           window, so every OTHER open document (if any) is currently
+           hidden per the §8 invariant -- and FrontWindow()/
+           FrontDocument() only ever consider VISIBLE windows, so the
+           check below would read NULL even though real documents
+           remain, wrongly triggering the "nothing left at all"
+           fallback and creating a redundant blank document while the
+           actual ones sit invisibly hidden. Bring whichever inUse
+           document comes first back to standard visibility instead --
+           simple, deterministic first-found choice; nothing tracks
+           "most recently used" to prefer one over another. */
+        short i;
+
+        for (i = 0; i < MAX_DOCUMENTS; i++) {
+            if (gDocuments[i].inUse) {
+                ShowWindow(gDocuments[i].window);
+                SelectWindow(gDocuments[i].window);
+                break;
+            }
+        }
+    }
 
     if (FrontDocument() == NULL) {
         /* Last window just closed. MULTI_WINDOW_DESIGN.md's Milestone 0
@@ -425,10 +507,34 @@ static Boolean ConfirmDiscardChangesForAllDocuments(void)
             continue;
         /* Same SelectWindow-first reasoning as CloseDocumentInteractive
            above -- ConfirmDiscardChanges always asks about whichever
-           document is front. */
+           document is front. ShowWindow first too: unlike that other
+           call site (always the already-visible front document, or a
+           window just clicked, so necessarily visible), this one walks
+           every open document regardless of visibility -- if
+           Distraction Free is active elsewhere, some of these could be
+           hidden. Whether a plain SelectWindow reliably surfaces a
+           hidden window isn't something I could confirm one way or
+           the other from the available definitions (trap number and
+           signature only, no behavioral documentation) -- ShowWindow
+           first removes the question rather than resting on an
+           unverified assumption; a harmless no-op for whichever
+           documents were already visible. */
+        ShowWindow(gDocuments[i].window);
         SelectWindow(gDocuments[i].window);
         if (!ConfirmDiscardChanges())
             return false;
+        /* Accepted, narrow edge case, not fixed here: if this loop
+           ShowWindow'd a document that was hidden because some OTHER
+           document is distraction-free, and the person then cancels
+           here, that document stays visible even though the DF
+           invariant nominally still holds for whichever document was
+           distraction-free. Restoring it would mean tracking which
+           windows this loop itself made visible and re-hiding exactly
+           those on a cancelled return -- real complexity for a
+           multi-condition edge case (must be mid-Quit, mid-DF, and
+           cancelled at exactly the right moment). Flagging the
+           trade-off rather than silently accepting it or building
+           the restore logic unasked. */
     }
     return true;
 }
@@ -493,11 +599,12 @@ static void DoMenuCommand(long menuResult)
         AdjustScrollbar();
     } else if (menuID == mView) {
         switch (menuItem) {
-            case iMarkdownView: SetViewMode(false); break;
-            case iWriterView:   SetViewMode(true); break;
-            case iZoomIn:       DoZoom(1); break;
-            case iZoomOut:      DoZoom(-1); break;
-            case iZoomDefault:  DoZoomReset(); break;
+            case iMarkdownView:    SetViewMode(false); break;
+            case iWriterView:      SetViewMode(true); break;
+            case iDistractionFree: SetDistractionFree(doc, !doc->distractionFree); break;
+            case iZoomIn:          DoZoom(1); break;
+            case iZoomOut:         DoZoom(-1); break;
+            case iZoomDefault:     DoZoomReset(); break;
         }
     } else if (menuID == mHelp) {
         switch (menuItem) {
@@ -506,9 +613,23 @@ static void DoMenuCommand(long menuResult)
     } else if (menuID == mWindow) {
         DocumentPtr chosen = DocumentForWindowMenuItem(menuItem);
 
-        if (chosen != NULL) {
-            SelectWindow(chosen->window);
-            SyncMenusToFrontDocument();
+        if (chosen != NULL && chosen != doc) {
+            if (doc != NULL && doc->distractionFree) {
+                /* §8.1: a plain SelectWindow isn't enough here -- doc
+                   (the current front document) is the one Distraction
+                   Free window, and chosen may currently be hidden (per
+                   the invariant every other open document is, while
+                   one is DF). Swap: re-house doc back to standard
+                   first, then re-house chosen into Distraction Free --
+                   keeps "frontmost DF implies everyone else hidden"
+                   true continuously rather than only at the moment DF
+                   was first turned on. */
+                SetDistractionFree(doc, false);
+                SetDistractionFree(chosen, true);
+            } else {
+                SelectWindow(chosen->window);
+                SyncMenusToFrontDocument();
+            }
         }
     }
     HiliteMenu(0);
@@ -749,20 +870,32 @@ int main(void)
     UpdateFileMenuState();
     SyncMenusToFrontDocument();
 
-    /* A newly-created visible window has its whole content area marked
-       invalid automatically, but the splash dialog appears before the
-       event loop ever gets a chance to dequeue and process that update
-       event -- force the real BeginUpdate/TEUpdate/EndUpdate cycle to
-       happen now, so the window has gone through one proper paint before
-       the user can type anything. Without this, the very first line typed
-       (before any other update has occurred) doesn't render reliably. */
+    /* This comment's original justification -- guarding against the
+       splash dialog blocking normal event processing -- no longer
+       applies to a plain cold launch now that the splash is removed
+       from that path below. Left in place anyway: harmless either
+       way (BeginUpdate/EndUpdate here just means the normal event
+       loop's first pass won't see a redundant updateEvt for the same
+       region), and DoStartupOpen (below) can still populate this same
+       window with real content afterward, in which case this paints
+       the blank state once before that happens -- also harmless, just
+       possibly a little redundant. */
     DoUpdate(doc->window);
 
     CountAppFiles(&message, &count);
     if (count >= 1 && message == appOpen)
         DoStartupOpen();
-    else
-        ShowSplashScreen();
+    /* No splash on a plain cold launch (no startup-opened file) --
+       per explicit request, the blank "Untitled" document already
+       created and painted above is the whole cold-launch experience
+       now, not a New/Open dialog on top of it. ShowSplashScreen()
+       itself (splash.c) is untouched, just no longer called from
+       here. CloseDocumentInteractive's own "last window closed
+       mid-session" fallback (main.c) still calls it -- flagging that
+       as a separate, unaddressed question rather than assuming the
+       same change belongs there too, since closing your last
+       document mid-session seems like a different moment than a cold
+       launch, not obviously wanting the same treatment. */
 
     EventLoop();
     return 0;

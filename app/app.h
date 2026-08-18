@@ -107,9 +107,10 @@
 #define mView        130
 #define iMarkdownView 1
 #define iWriterView  2
-#define iZoomIn      4
-#define iZoomOut     5
-#define iZoomDefault 6
+#define iDistractionFree 4
+#define iZoomIn      6
+#define iZoomOut     7
+#define iZoomDefault 8
 
 #define mHelp    132
 #define iAbout   1
@@ -156,6 +157,7 @@ void UpdateMenuBarLook(void);
 void UpdateFileMenuState(void);
 void RebuildWindowMenu(void);
 void SyncMenusToFrontDocument(void);
+void SetDistractionFree(DocumentPtr doc, Boolean toDistractionFree);
 
 /* scrolling.c */
 void UpdateScrollbarRange(void);

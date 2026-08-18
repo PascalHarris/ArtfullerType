@@ -58,12 +58,11 @@ typedef struct {
     a full reparse of the canonical TE and re-derives whichever links
     currently exist.
 
-    All of the fields below were, before this milestone, bare globals
-    in app.h/main.c (see MULTI_WINDOW_DESIGN.md §3 for the full list and
-    rationale). Fields the design doc's §3 draft included that aren't
-    here yet -- distractionFree, standardBounds -- are Milestone 5's
-    concern (window chrome); this milestone explicitly doesn't touch
-    that, so they're left out rather than added unused.
+    All of the fields below were, before Milestone 1, bare globals in
+    app.h/main.c (see MULTI_WINDOW_DESIGN.md §3 for the full list and
+    rationale). distractionFree/standardBounds were deliberately left
+    out of that milestone's version of this struct as unused-until-
+    needed; added now that Milestone 5 needs them.
 */
 typedef struct DocumentRecord {
     Boolean inUse;
@@ -81,6 +80,14 @@ typedef struct DocumentRecord {
     short vRefNum;
 
     Boolean hideMarkdown;       /* Writer (true) vs. Markdown (false) view */
+
+    Boolean distractionFree;    /* full-screen borderless chrome vs. standard */
+    Rect standardBounds;        /* window's standard-chrome bounds, in global
+                                    coordinates -- restored on leaving
+                                    Distraction Free. Only meaningful once
+                                    distractionFree has been true at least
+                                    once; a document that's never entered
+                                    Distraction Free never reads it. */
 
     UndoSnapshot undoStack[MAX_UNDO_LEVELS];
     short undoCount;
@@ -127,5 +134,6 @@ DocumentPtr FindFreeDocumentSlot(void);
 DocumentPtr CreateNewDocument(void);
 void CloseDocument(DocumentPtr doc);
 void UpdateWindowTitle(DocumentPtr doc);
+void ReHouseDocument(DocumentPtr doc, Boolean toDistractionFree);
 
 #endif

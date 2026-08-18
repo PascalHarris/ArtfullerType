@@ -150,22 +150,73 @@ static void ReadFile(StringPtr name, short vRefNum)
     InvalRect(&doc->window->portRect);
 }
 
+/*
+    Opens every file the Finder queued at launch -- previously only
+    ever read the first (GetAppFiles(1, ...), hardcoded), so selecting
+    several documents and double-clicking, or dragging several onto
+    the app's icon, silently opened just one and ignored the rest.
+    CountAppFiles/GetAppFiles/ClrAppFiles all take an explicit index
+    (confirmed against this toolchain's real definitions -- ClrAppFiles
+    specifically takes an index parameter, not a bare "clear
+    everything" call, which is why each iteration below clears its own
+    entry rather than clearing once at the end), so this is a
+    straightforward loop rather than anything needing new machinery.
+
+    The first file reuses the blank document main() already created
+    and painted before calling this -- no reason to leave that one
+    sitting empty while opening a second, separate document for the
+    same file. Every file after the first gets its own new document
+    via CreateNewDocument, which already staggers each new window
+    based on which slot it lands in, so multiple windows opened this
+    way don't stack exactly on top of each other without any extra
+    handling needed here.
+
+    RebuildWindowMenu/UpdateFileMenuState/SyncMenusToFrontDocument run
+    once after the whole loop, not per file -- each does a full pass
+    over every open document regardless of how many changed, so
+    calling them once at the end reflects every opened file's final
+    state without redundant repeated work partway through.
+*/
 void DoStartupOpen(void)
 {
-    DocumentPtr doc = FrontDocument();
     short message, count;
+    short i;
     AppFile theFile;
+    DocumentPtr doc;
+    Boolean firstFile = true;
 
     CountAppFiles(&message, &count);
     if (count < 1 || message != appOpen)
         return;
 
-    GetAppFiles(1, &theFile);
-    BlockMove(theFile.fName, doc->fileName, theFile.fName[0] + 1);
-    doc->vRefNum = theFile.vRefNum;
-    doc->haveFile = true;
-    ReadFile(doc->fileName, doc->vRefNum);
-    ClrAppFiles(1);
+    for (i = 1; i <= count; i++) {
+        GetAppFiles(i, &theFile);
+
+        if (firstFile) {
+            doc = FrontDocument();
+            firstFile = false;
+        } else {
+            doc = CreateNewDocument();
+        }
+
+        if (doc == NULL)
+            break; /* MAX_DOCUMENTS reached -- stop opening further
+                       queued files rather than failing loudly; the
+                       ones already opened this pass stay open, same
+                       "safety net, not a normal path" reasoning as
+                       DoNewFile/DoOpenFile's own MAX_DOCUMENTS checks. */
+
+        BlockMove(theFile.fName, doc->fileName, theFile.fName[0] + 1);
+        doc->vRefNum = theFile.vRefNum;
+        doc->haveFile = true;
+        ReadFile(doc->fileName, doc->vRefNum);
+
+        ClrAppFiles(i);
+    }
+
+    RebuildWindowMenu();
+    UpdateFileMenuState();
+    SyncMenusToFrontDocument();
 }
 
 Boolean DoSaveAs(void)
@@ -271,6 +322,7 @@ Boolean ConfirmDiscardChanges(void)
 Boolean DoOpenFile(void)
 {
     DocumentPtr doc;
+    DocumentPtr front;
     SFReply reply;
     Point where = {100, 100};
     SFTypeList types;
@@ -281,6 +333,15 @@ Boolean DoOpenFile(void)
     UpdateMenuBarLook();
     if (!reply.good)
         return false;
+
+    /* §8.2: opening a document while any window is distraction-free
+       exits Distraction Free first, rather than opening the new
+       document hidden. Checked only here, after confirming the
+       picker wasn't cancelled -- cancelling Open should leave
+       Distraction Free state untouched. */
+    front = FrontDocument();
+    if (front != NULL && front->distractionFree)
+        SetDistractionFree(front, false);
 
     doc = CreateNewDocument();
     if (doc == NULL)
@@ -300,8 +361,15 @@ Boolean DoOpenFile(void)
 
 void DoNewFile(void)
 {
-    DocumentPtr doc = CreateNewDocument();
+    DocumentPtr front = FrontDocument();
+    DocumentPtr doc;
 
+    /* §8.2, same reasoning as DoOpenFile above -- New has no picker to
+       cancel, so this always runs before creating. */
+    if (front != NULL && front->distractionFree)
+        SetDistractionFree(front, false);
+
+    doc = CreateNewDocument();
     if (doc == NULL)
         return; /* MAX_DOCUMENTS reached -- same safety net as DoOpenFile */
 

@@ -54,6 +54,65 @@ void UpdateWindowTitle(DocumentPtr doc)
 }
 
 /*
+    Builds (or rebuilds) one document's window and scrollbar, and
+    computes the text viewRect for it -- the geometry work shared by
+    CreateNewDocument (a brand new document, which then creates fresh
+    TE records into this geometry) and ReHouseDocument (an existing
+    document swapping chrome, which reuses its existing TE records and
+    just re-points them at this new geometry) -- per the note at the
+    end of MULTI_WINDOW_DESIGN.md §4.2. Deliberately doesn't touch TE
+    records at all: that's exactly the part that differs between the
+    two callers, so it stays their job.
+
+    outViewRect is a small deviation from the doc's own 4-parameter
+    BuildWindowChrome(doc, bounds, proc, visible) sketch -- that sketch
+    never actually shows how the computed viewRect gets back to the
+    caller either, since in the doc's pseudocode the "shared" chrome
+    work is written inline rather than factored out at all. Both real
+    callers need viewRect afterward, so this returns it directly
+    rather than making them recompute the same arithmetic from
+    doc->window->portRect a second time -- keeps the doc's own stated
+    goal (not duplicating the viewRect/scrollbar setup) rather than
+    the letter of a 4-arg signature that was illustrative, not a firm
+    contract.
+*/
+static void BuildWindowChrome(DocumentPtr doc, Rect *bounds, short proc,
+                               Boolean visible, Rect *outViewRect)
+{
+    Rect sbRect;
+
+    doc->window = NewWindow(NULL, bounds, "\p", true, proc,
+                             (WindowPtr) -1L, visible, 0);
+    SetPort(doc->window);
+
+    /*
+        Scrollbar first, flush against the window's right edge and
+        spanning the full window height -- the standard Mac layout
+        (e.g. TeachText). The 1px overlap on all three outer edges
+        (right/top/bottom) is the usual classic-Mac convention so the
+        control's own frame blends with the window's, rather than
+        leaving a visible 1px gap.
+
+        Text viewRect is then inset from the scrollbar's left edge on
+        the right (not from the window's raw right edge), so text
+        never runs underneath it. Left/top/bottom use the small
+        MARGIN_H/MARGIN_TOP/MARGIN_BOTTOM text margins (see app.h).
+    */
+    sbRect.right = doc->window->portRect.right + 1;
+    sbRect.left = sbRect.right - SCROLLBAR_WIDTH;
+    sbRect.top = doc->window->portRect.top - 1;
+    sbRect.bottom = doc->window->portRect.bottom + 1;
+    doc->scrollBar = NewControl(doc->window, &sbRect, "\p", false, 0, 0, 0, scrollBarProc, 0);
+    doc->scrollBarVisible = false;
+
+    *outViewRect = doc->window->portRect;
+    outViewRect->left += MARGIN_H;
+    outViewRect->right -= (SCROLLBAR_WIDTH + MARGIN_H);
+    outViewRect->top += MARGIN_TOP;
+    outViewRect->bottom -= MARGIN_BOTTOM;
+}
+
+/*
     Builds one new document: window, both TE records, scrollbar, and
     every DocumentRecord field given an explicit initial value -- this
     is Milestone 1's MakeWindow (formerly in main.c, always operating
@@ -80,7 +139,6 @@ DocumentPtr CreateNewDocument(void)
     DocumentPtr doc = FindFreeDocumentSlot();
     Rect bounds;
     Rect viewRect;
-    Rect sbRect;
     short fontNum;
     short slotIndex;
     short stagger;
@@ -111,40 +169,11 @@ DocumentPtr CreateNewDocument(void)
     if (bounds.bottom > qd.screenBits.bounds.bottom)
         OffsetRect(&bounds, 0, qd.screenBits.bounds.bottom - bounds.bottom);
 
-    doc->window = NewWindow(NULL, &bounds, "\p", true, documentProc,
-                             (WindowPtr) -1L, true, 0);
-    SetPort(doc->window);
+    BuildWindowChrome(doc, &bounds, documentProc, true, &viewRect);
 
     GetFNum("\pTimes", &fontNum);
     TextFont(fontNum);
     TextSize(CurrentFontSize());
-
-    /*
-        Scrollbar first, flush against the window's right edge and
-        spanning the full window height -- the standard Mac layout
-        (e.g. TeachText), and what "scroll bars should be tight
-        against the window edge" specifically asks for. The 1px
-        overlap on all three outer edges (right/top/bottom) is the
-        usual classic-Mac convention so the control's own frame blends
-        with the window's, rather than leaving a visible 1px gap.
-
-        Text viewRect is then inset from the scrollbar's left edge on
-        the right (not from the window's raw right edge), so text
-        never runs underneath it. Left/top/bottom use the small
-        MARGIN_H/MARGIN_TOP/MARGIN_BOTTOM text margins (see app.h).
-    */
-    sbRect.right = doc->window->portRect.right + 1;
-    sbRect.left = sbRect.right - SCROLLBAR_WIDTH;
-    sbRect.top = doc->window->portRect.top - 1;
-    sbRect.bottom = doc->window->portRect.bottom + 1;
-    doc->scrollBar = NewControl(doc->window, &sbRect, "\p", false, 0, 0, 0, scrollBarProc, 0);
-    doc->scrollBarVisible = false;
-
-    viewRect = doc->window->portRect;
-    viewRect.left += MARGIN_H;
-    viewRect.right -= (SCROLLBAR_WIDTH + MARGIN_H);
-    viewRect.top += MARGIN_TOP;
-    viewRect.bottom -= MARGIN_BOTTOM;
 
     doc->te = TEStyleNew(&viewRect, &viewRect);
     doc->hiddenTE = TEStyleNew(&viewRect, &viewRect);
@@ -169,6 +198,8 @@ DocumentPtr CreateNewDocument(void)
     doc->cachedHeightToLine = 0;
     doc->cachedHeightToLineNext = 0;
 
+    doc->distractionFree = false;
+
     /* Must be set before UpdateWindowTitle -- DocumentForWindow (which
        UpdateWindowTitle doesn't call directly, but the general rule
        throughout this codebase is that a document isn't "real" to any
@@ -179,6 +210,90 @@ DocumentPtr CreateNewDocument(void)
     UpdateWindowTitle(doc);
 
     return doc;
+}
+
+/*
+    Rebuilds doc's window with different chrome -- standard <-> full-
+    screen borderless -- while preserving its content, styling, undo/
+    redo history, and link table untouched, per MULTI_WINDOW_DESIGN.md
+    §4.2: TE records aren't structurally owned by a window (see the
+    comment above SuppressDrawing in markdown.c, which already relies
+    on this), so only the window itself, its scrollbar, and the TE
+    records' viewRect/destRect need rebuilding -- not the TE records
+    themselves.
+
+    Precondition, same shape as CloseDocument's: doc must already be
+    FrontDocument() when this is called. InvalidateHeightCache and
+    AdjustScrollbar (scrolling.c) self-resolve their target via
+    FrontDocument() rather than taking a DocumentPtr -- this holds at
+    every current call site (SetDistractionFree, main.c) because
+    NewWindow's behind=(WindowPtr)-1L below places doc's rebuilt window
+    frontmost immediately, before either of those calls run later in
+    this same function.
+
+    Milestone 5 scope: this only ever touches doc's own window. Hiding/
+    showing every OTHER open document to maintain "frontmost
+    distraction-free implies everyone else hidden" is Milestone 6's
+    concern -- SetDistractionFree (main.c) wraps this with that
+    orchestration; nothing here needs to know about other documents.
+*/
+void ReHouseDocument(DocumentPtr doc, Boolean toDistractionFree)
+{
+    Rect newBounds, viewRect;
+    short savedSelStart, savedSelEnd;
+
+    if (doc == NULL)
+        return;
+
+    savedSelStart = (**doc->activeTE).selStart;
+    savedSelEnd = (**doc->activeTE).selEnd;
+
+    if (toDistractionFree) {
+        /* portRect is in local (window-relative) coordinates -- convert
+           to global before storing, since the window it's relative to
+           is about to be disposed and a local rect means nothing once
+           that's gone. LocalToGlobal converts one Point at a time, not
+           a Rect directly -- the (Point*)&rect.top / &rect.bottom cast
+           works because {top,left} and {bottom,right} are laid out
+           exactly like {v,h} in memory, the standard classic Mac idiom
+           for converting a Rect's two corners in place. */
+        Rect globalBounds = doc->window->portRect;
+
+        LocalToGlobal((Point *) &globalBounds.top);
+        LocalToGlobal((Point *) &globalBounds.bottom);
+        doc->standardBounds = globalBounds;
+
+        newBounds = qd.screenBits.bounds;
+        newBounds.top += MENU_BAR_HEIGHT;
+    } else {
+        newBounds = doc->standardBounds;
+    }
+
+    /* DisposeWindow while doc->window is the current port leaves
+       thePort dangling until BuildWindowChrome's own SetPort(doc->window)
+       runs -- that happens as literally its first act, so this stays
+       safe, but nothing may be inserted between these two calls that
+       touches the port. */
+    DisposeControl(doc->scrollBar);
+    DisposeWindow(doc->window);
+
+    BuildWindowChrome(doc, &newBounds,
+                       toDistractionFree ? plainDBox : documentProc,
+                       true, &viewRect);
+
+    (**doc->te).viewRect = viewRect;
+    (**doc->te).destRect = viewRect;
+    (**doc->hiddenTE).viewRect = viewRect;
+    (**doc->hiddenTE).destRect = viewRect;
+    TECalText(doc->te);
+    TECalText(doc->hiddenTE);
+    TESetSelect(savedSelStart, savedSelEnd, doc->activeTE);
+
+    doc->distractionFree = toDistractionFree;
+    UpdateWindowTitle(doc);
+    InvalidateHeightCache();
+    AdjustScrollbar();
+    InvalRect(&doc->window->portRect);
 }
 
 /*
