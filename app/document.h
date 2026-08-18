@@ -49,6 +49,20 @@ typedef struct {
 } UndoSnapshot;
 
 /*
+    Pagination cache, shared between Page View (not yet implemented)
+    and printing -- PRINTING_DESIGN.md §5. count is always >= 1 (a
+    document, even an empty one, is always at least one page) --
+    there's no "valid but happens to be empty" state to worry about
+    the way DocumentRecord's own cachedTotalHeightNLines needs a -1
+    sentinel for.
+*/
+typedef struct {
+    short count;
+    short breaks[iPFMaxPgs];   /* character offset each page starts at;
+                                   breaks[0] is always 0 */
+} PageBreaks;
+
+/*
     Link URLs in Writer mode live here, keyed by a small ID (1-based;
     0 means "no link"). The ID rides along in each run's otherwise-unused
     tsColor.red -- TextEdit already tracks style-run boundaries through
@@ -106,6 +120,21 @@ typedef struct DocumentRecord {
        printed is memory this app doesn't need to spend up front, per
        PRINTING_DESIGN.md §2.1. Disposed in CloseDocument. */
     THPrint printRecord;
+
+    /* Pagination cache -- PRINTING_DESIGN.md §5. Shared by Page View
+       (not yet implemented) and printing (print.c's DoPrint); computed
+       lazily by print.c's EnsurePageBreaks, invalidated by
+       InvalidatePagination whenever something that can shift page
+       breaks changes -- a successful Page Setup, and everything that
+       already calls InvalidateHeightCache (scrolling.c), since editing,
+       zoom, and style changes can all change line heights and
+       therefore where pages break too. pageBreaksValid starts false
+       (CreateNewDocument) -- there's no "never computed yet" vs.
+       "computed and happens to be empty" ambiguity to resolve the way
+       cachedTotalHeightNLines's -1 sentinel exists for, since
+       pageBreaks.count is never legitimately 0. */
+    PageBreaks pageBreaks;
+    Boolean pageBreaksValid;
 
     /* Moved from scrolling.c's file-static height caches -- per-TE-
        content caches, so leaving them as file-statics would make one

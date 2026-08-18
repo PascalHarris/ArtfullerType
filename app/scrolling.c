@@ -1,4 +1,5 @@
 #include "app.h"
+#include "print.h"
 
 /*
     The scrollbar's value is never tracked as an independent counter --
@@ -55,6 +56,7 @@ void InvalidateHeightCache(void)
 
     doc->cachedTotalHeightNLines = -1;
     doc->cachedCaretLine = -1;
+    InvalidatePagination(doc);
 }
 
 /*
@@ -130,8 +132,11 @@ void AdjustScrollbar(void)
 
 /* lineStarts[] is sorted, so the line containing pos is found with a
    binary search instead of a linear scan -- same result, no behavior
-   change, just faster for documents with many lines. */
-static short LineContaining(TEHandle te, short pos)
+   change, just faster for documents with many lines. Not static:
+   print.c's DrawPageContent reuses this same binary search to turn a
+   page's starting character offset (always exactly a line start, per
+   ComputePageBreaks) back into a line index. */
+short LineContaining(TEHandle te, short pos)
 {
     short low = 0;
     short high = (**te).nLines - 1;

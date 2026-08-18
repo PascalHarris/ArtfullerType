@@ -6,5 +6,7 @@
 /* print.c */
 Boolean DoPageSetup(void);
 void DoPrint(void);
+void EnsurePageBreaks(DocumentPtr doc);
+void InvalidatePagination(DocumentPtr doc);
 
 #endif

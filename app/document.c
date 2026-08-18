@@ -301,6 +301,7 @@ DocumentPtr CreateNewDocument(void)
     doc->linkCount = 0;
 
     doc->printRecord = NULL;
+    doc->pageBreaksValid = false;
 
     doc->cachedTotalHeightNLines = -1;
     doc->cachedCaretLine = -1;

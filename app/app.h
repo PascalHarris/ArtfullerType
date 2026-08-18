@@ -201,6 +201,7 @@ void AdjustScrollbar(void);
 void ScrollCaretIntoView(void);
 void DoScrollClick(Point pt);
 void InvalidateHeightCache(void);
+short LineContaining(TEHandle te, short pos);
 
 /* markdown.c */
 void ClearStyles(void);
