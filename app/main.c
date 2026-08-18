@@ -69,6 +69,7 @@
 #endif
 
 Boolean gDone = false;
+MenuHandle gAppleMenu;
 MenuHandle gFileMenu;
 MenuHandle gViewMenu;
 MenuHandle gEditMenu;
@@ -87,38 +88,48 @@ static void Init(void)
 }
 
 /*
-    Writer mode gets a black menu bar with white text; Markdown mode gets
-    the standard look. There's no Menu Manager API for this on classic Mac
-    OS (that's a much later Appearance Manager concept) -- on a 1-bit
-    display, drawing the normal bar and then XOR-inverting that strip
-    achieves the same thing trivially. Must target the Window Manager
-    port (global screen coordinates), not whatever window's port happens
-    to be current, since the menu bar isn't part of any window.
+    Refreshes the menu bar. Used throughout this codebase after
+    anything that could invalidate it -- menu commands, dismissing a
+    modal dialog, etc.
 
-    Verified (not assumed) against Milestone 5's Distraction Free work:
-    the bar rect below is computed purely from qd.screenBits.bounds and
-    drawn into the Window Manager port -- it has no dependency on any
-    document's window bounds or chrome (documentProc vs. plainDBox), so
-    a document being distraction-free changes nothing about how this
-    function behaves. hideMarkdown (view mode: Writer vs. Markdown) and
-    distractionFree (window chrome) are genuinely orthogonal fields.
+    Also draws a black menu bar with white text, but only while the
+    front document is BOTH distraction-free AND in Writer mode
+    (hideMarkdown) -- not for hideMarkdown alone, which is what this
+    used to key off. Per explicit clarification: the indicator only
+    makes sense in Distraction Free's full-screen, everything-else-
+    hidden context, where inverting the whole bar (including the Apple
+    menu and anything a menu-bar-resident utility draws) is consistent
+    with what "distraction free" already means, not a bug -- you've
+    already asked to see nothing else. In ordinary windowed mode the
+    menu bar now stays fully standard, no exceptions; a windowed-mode
+    equivalent is a separate, later piece of work, not attempted here.
 
-    Guards against FrontDocument() returning NULL: MakeMenu() below calls
-    this once, before main()'s first CreateNewDocument() call has run
-    and before any gDocuments slot is populated -- the only point in
-    the whole program where there isn't a front document yet.
-    Everywhere else this is called from, a window already exists.
+    This previously keyed off hideMarkdown alone and inverted only the
+    strip under this app's own titles, which had two real problems:
+    inverted title text is indistinguishable, by Mac convention, from
+    those menus being highlighted/tracked, so every title looked
+    permanently "selected" any time Writer mode was active, windowed
+    or not -- not a sizing problem the strip's bounds could fix, since
+    the visual language itself was the wrong tool for a mode that
+    isn't full-screen. And the width computation for that narrower
+    strip had a real bug independent of the above: it saved/restored
+    the wrong GrafPort's font (the document window's, not the Window
+    Manager port's, which is the one actually changed), leaving menu-
+    bar text size drifting to whatever font the document last had
+    active. Neither problem applies to the simpler, full-width bar
+    restored below, which needs no font measurement at all.
 */
 void UpdateMenuBarLook(void)
 {
-    GrafPtr savePort;
-    GrafPtr wMgrPort;
-    Rect bar;
     DocumentPtr doc = FrontDocument();
 
     DrawMenuBar();
 
-    if (doc != NULL && doc->hideMarkdown) {
+    if (doc != NULL && doc->distractionFree && doc->hideMarkdown) {
+        GrafPtr savePort;
+        GrafPtr wMgrPort;
+        Rect bar;
+
         GetPort(&savePort);
         GetWMgrPort(&wMgrPort);
         SetPort(wMgrPort);
@@ -133,7 +144,20 @@ void UpdateMenuBarLook(void)
 static void MakeMenu(void)
 {
     MenuHandle styleMenu;
-    MenuHandle helpMenu;
+
+    /* Built and inserted first -- InsertMenu(..., 0) appends to the
+       end of the current menu list, so whichever menu is inserted
+       first ends up leftmost. Titled with the Apple logo character
+       ("\p\024", 0x14), not a literal word. AppendResMenu populates
+       the rest of the menu with every installed desk accessory --
+       that's what makes this "a working Apple menu... as with all
+       classic Mac software" rather than just an About box under a
+       different icon; a real Apple menu's main job historically is
+       desk accessory access, not the About item. */
+    gAppleMenu = NewMenu(mApple, "\p\024");
+    AppendMenu(gAppleMenu, "\pAbout The Artful Type...;(-");
+    AppendResMenu(gAppleMenu, 'DRVR');
+    InsertMenu(gAppleMenu, 0);
 
     gFileMenu = NewMenu(mFile, "\pFile");
     AppendMenu(gFileMenu, "\pNew/N;Open.../O;Close/W;Save/S;Save As...;(-;Quit/Q");
@@ -166,9 +190,16 @@ static void MakeMenu(void)
     gWindowMenu = NewMenu(mWindow, "\pWindow");
     InsertMenu(gWindowMenu, 0);
 
+    /* Help menu disabled for now -- About now lives in the Apple menu
+       (mApple's iAbout branch in DoMenuCommand); revisit what belongs
+       here later. Not deleted, just not built/inserted -- mHelp and
+       iAbout stay defined in app.h, cheap to keep, reinstate or
+       remove once there's an actual decision about Help content.
+
     helpMenu = NewMenu(mHelp, "\pHelp");
     AppendMenu(helpMenu, "\pAbout The Artful Type...");
     InsertMenu(helpMenu, 0);
+    */
 
     UpdateMenuBarLook();
 }
@@ -545,7 +576,19 @@ static void DoMenuCommand(long menuResult)
     short menuItem = LoWord(menuResult);
     DocumentPtr doc = FrontDocument();
 
-    if (menuID == mFile) {
+    if (menuID == mApple) {
+        if (menuItem == iAbout) {
+            ShowAboutBox();
+        } else {
+            /* Anything past the About item is one of the desk
+               accessories AppendResMenu (MakeMenu) appended -- fetch
+               its name and hand it to the Desk Manager. */
+            Str255 name;
+
+            GetMenuItemText(gAppleMenu, menuItem, name);
+            OpenDeskAcc(name);
+        }
+    } else if (menuID == mFile) {
         switch (menuItem) {
             case iNew:   DoNewFile(); break;
             case iOpen:  DoOpenFile(); break;
@@ -558,6 +601,13 @@ static void DoMenuCommand(long menuResult)
                 break;
         }
     } else if (menuID == mEdit) {
+        /* Known gap, not addressed here: when a desk accessory is
+           frontmost, Edit commands conventionally route through
+           SystemEdit() instead of this app's own DoCut/DoCopy/etc.,
+           so e.g. cut/copy/paste into Calculator or Note Pad would
+           work. Left as-is (Milestone 8) -- worth doing eventually,
+           deliberately out of scope for the Apple-menu/desk-accessory
+           pass that added SystemTask/SystemEvent/SystemClick above. */
         switch (menuItem) {
             case iUndo:      DoUndo(); break;
             case iRedo:      DoRedo(); break;
@@ -606,10 +656,16 @@ static void DoMenuCommand(long menuResult)
             case iZoomOut:         DoZoom(-1); break;
             case iZoomDefault:     DoZoomReset(); break;
         }
+    /* Help menu disabled for now (see MakeMenu) -- About lives in the
+       Apple menu's iAbout branch above instead. Unreachable since
+       mHelp is never inserted into the menu bar anymore, kept rather
+       than deleted for the same reason noted in MakeMenu.
+
     } else if (menuID == mHelp) {
         switch (menuItem) {
             case iAbout: ShowAboutBox(); break;
         }
+    */
     } else if (menuID == mWindow) {
         DocumentPtr chosen = DocumentForWindowMenuItem(menuItem);
 
@@ -706,12 +762,27 @@ static void EventLoop(void)
                 SetPort(doc->window);
             switch (event.what) {
                 case updateEvt:
+                    /* A desk accessory's own update is routed to the
+                       Desk Manager instead of this app's DoUpdate,
+                       which only knows about its own documents --
+                       DocumentForWindow(w) would just return NULL for
+                       a DA window, and DoUpdate would still call
+                       BeginUpdate/EraseRect/EndUpdate on it, which
+                       isn't this app's place to do. */
+                    if (SystemEvent(&event))
+                        break;
                     DoUpdate((WindowPtr) event.message);
                     break;
 
                 case mouseDown:
                     part = FindWindow(event.where, &w);
-                    if (part == inMenuBar) {
+                    if (part == inSysWindow) {
+                        /* A click in a desk accessory's own window --
+                           SystemClick handles everything about it
+                           (dragging, closing, clicking its controls),
+                           not this app's own window handling below. */
+                        SystemClick(&event, w);
+                    } else if (part == inMenuBar) {
                         UpdateEditMenuState();
                         DoMenuCommand(MenuSelect(event.where));
                     } else if (part == inContent) {
@@ -760,8 +831,19 @@ static void EventLoop(void)
 
                 case keyDown:
                 case autoKey: {
-                    char key = event.message & charCodeMask;
-                    Boolean isContentKey = (key < 0x1C || key > 0x1F);
+                    char key;
+                    Boolean isContentKey;
+
+                    /* If a desk accessory is frontmost and this key is
+                       meant for it, SystemEvent handles it entirely --
+                       skip this app's own key handling (including
+                       menu-key interpretation below) for the whole
+                       event, not just the content-typing path. */
+                    if (SystemEvent(&event))
+                        break;
+
+                    key = event.message & charCodeMask;
+                    isContentKey = (key < 0x1C || key > 0x1F);
 
                     if (event.modifiers & cmdKey) {
                         if (event.what == keyDown) {
@@ -814,7 +896,19 @@ static void EventLoop(void)
                        be inline here -- shared with osEvt below, which
                        needs the identical sequence for MultiFinder
                        layer switches that arrive without a matching
-                       activateEvt at all. */
+                       activateEvt at all.
+
+                       SystemEvent checked first: if the window being
+                       (de)activated is a desk accessory's own, that's
+                       its own activation notice to act on (e.g.
+                       showing/hiding its own caret), not something to
+                       silently no-op past via ActivateWindowDocument's
+                       own DocumentForWindow(w) == NULL guard, which
+                       only protects this app's TE calls -- it doesn't
+                       give the DA a chance to respond to its own
+                       activation at all. */
+                    if (SystemEvent(&event))
+                        break;
                     ActivateWindowDocument((WindowPtr) event.message,
                                             (event.modifiers & activeFlag) != 0);
                     break;
@@ -846,11 +940,15 @@ static void EventLoop(void)
             }
         }
 
-        /* Runs every pass through the loop, whether or not
+        /* Both run every pass through the loop, whether or not
            WaitNextEvent returned an event -- FrontDocument() can
            legitimately be NULL here for the same reason noted above at
-           the top of the loop, so this no longer dereferences it
-           unconditionally either. */
+           the top of the loop, so TEIdle no longer dereferences it
+           unconditionally either. SystemTask gives any open desk
+           accessory its own processing time (e.g. so a clock DA keeps
+           ticking) -- per Milestone 8, this needs to run every pass
+           regardless of events, same as TEIdle already did. */
+        SystemTask();
         doc = FrontDocument();
         if (doc != NULL)
             TEIdle(doc->activeTE);

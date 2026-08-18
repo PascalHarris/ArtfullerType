@@ -269,12 +269,21 @@ void ReHouseDocument(DocumentPtr doc, Boolean toDistractionFree)
         newBounds = doc->standardBounds;
     }
 
-    /* DisposeWindow while doc->window is the current port leaves
-       thePort dangling until BuildWindowChrome's own SetPort(doc->window)
-       runs -- that happens as literally its first act, so this stays
-       safe, but nothing may be inserted between these two calls that
-       touches the port. */
-    DisposeControl(doc->scrollBar);
+    /* DisposeWindow also disposes doc->scrollBar -- same as
+       CloseDocument (this file): a Control Manager control is owned
+       by its window and goes with it. A real bug lived here until
+       this fix: an explicit DisposeControl(doc->scrollBar) used to
+       run immediately before this DisposeWindow call, double-freeing
+       the scrollbar's Control Record (DisposeWindow disposes it too,
+       since it's still attached at that point) -- heap corruption,
+       not merely a logic error, which is why the reported symptom
+       (window title font changing, system-wide, persisting after
+       quit) looked completely unrelated to Distraction Free. Also:
+       DisposeWindow while doc->window is the current port leaves
+       thePort dangling until BuildWindowChrome's own
+       SetPort(doc->window) runs -- that happens as literally its
+       first act, so this stays safe, but nothing may be inserted
+       between these two calls that touches the port. */
     DisposeWindow(doc->window);
 
     BuildWindowChrome(doc, &newBounds,

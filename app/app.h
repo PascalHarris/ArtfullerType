@@ -41,6 +41,16 @@
 #define FONT_SIZE 18
 #define SCROLLBAR_WIDTH 16
 
+/*
+    Apple menu (Milestone 8). 1 is the conventional Apple-menu ID;
+    nothing else currently uses it. Reuses mHelp's iAbout (also 1) for
+    its own About item rather than defining a second constant with the
+    same value -- item constants are only ever switched on within
+    their own menuID's branch in DoMenuCommand, so this doesn't
+    collide with anything.
+*/
+#define mApple   1
+
 #define mFile    128
 #define iNew     1
 #define iOpen    2
@@ -146,6 +156,7 @@
     document setting -- see MULTI_WINDOW_DESIGN.md §10's zoom.c note).
 */
 extern Boolean gDone;
+extern MenuHandle gAppleMenu;
 extern MenuHandle gFileMenu;
 extern MenuHandle gViewMenu;
 extern MenuHandle gEditMenu;
