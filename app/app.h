@@ -101,6 +101,7 @@
 #define iCopy    5
 #define iPaste   6
 #define iSelectAll 8
+#define iPreferences 10
 
 #define mStyle   129
 #define iBold    1

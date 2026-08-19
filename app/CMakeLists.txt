@@ -16,6 +16,7 @@ add_application(ArtfulType
     zoom.c
     file.c
     print.c
+    preferences.c
     splash.c
     main.r
     CREATOR "ArtT"

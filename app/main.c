@@ -46,6 +46,7 @@
 
 #include "app.h"
 #include "print.h"
+#include "preferences.h"
 
 /*
     Confirmed by an actual build error, not assumed this time: this
@@ -121,6 +122,18 @@ static void Init(void)
     bar text size drifting to whatever font the document last had
     active. Neither problem applies to the simpler, full-width bar
     restored below, which needs no font measurement at all.
+
+    Every icon in the bar (Apple menu, Balloon Help, Application menu)
+    inverts along with everything else -- a deliberate choice, not an
+    oversight. Preserving true icon colors on color-capable screens
+    was attempted and then abandoned: doing it exactly (via each
+    icon's own mask) was only achievable for this app's own icon,
+    since that's the only one of the three this app has real resource
+    access to; the other two would only ever get an approximate,
+    rectangle-based guess, and a mismatched mix of one exactly-colored
+    icon alongside two crudely-haloed ones looks worse than uniformly
+    inverting all three the same way. Simple and consistent, even if
+    the icons look a little odd when inverted, beats a mishmash.
 */
 void UpdateMenuBarLook(void)
 {
@@ -169,7 +182,7 @@ static void MakeMenu(void)
        Cmd-Shift-Z for Redo is instead handled directly in EventLoop,
        intercepted before MenuKey ever sees it. */
     gEditMenu = NewMenu(mEdit, "\pEdit");
-    AppendMenu(gEditMenu, "\pUndo/Z;Redo;(-;Cut/X;Copy/C;Paste/V;(-;Select All/A");
+    AppendMenu(gEditMenu, "\pUndo/Z;Redo;(-;Cut/X;Copy/C;Paste/V;(-;Select All/A;(-;Preferences...");
     InsertMenu(gEditMenu, 0);
     DisableItem(gEditMenu, iUndo);
     DisableItem(gEditMenu, iRedo);
@@ -742,6 +755,8 @@ static void DoMenuCommand(long menuResult)
                 case iSelectAll: DoSelectAll(); break;
             }
         }
+        if (menuItem == iPreferences)
+            DoPreferences();
     } else if (menuID == mStyle) {
         if (doc != NULL) {
             doc->dirty = true;
@@ -1102,6 +1117,7 @@ int main(void)
     DocumentPtr doc;
 
     Init();
+    LoadPreferences();
     LoadZoomPref();
     MakeMenu();
     doc = CreateNewDocument();
