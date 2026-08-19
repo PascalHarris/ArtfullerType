@@ -156,6 +156,41 @@ static void CopyToPascalString(const char *src, long len, Str255 dst)
 }
 
 /*
+    DIAGNOSTIC ONLY -- not a fix. Temporary instrumentation to find out
+    exactly where SavePreferences (and the button handling leading up
+    to it) actually stops on real hardware, given a reported hang with
+    no other visible symptom: no crash, no screen corruption, the
+    cursor keeps tracking normally, only the dialog itself stops
+    responding to clicks. A beep-based version of this was tried first
+    and turned out impractical for exactly that reason -- nothing marks
+    the moment a hang actually starts, so there's no reliable point to
+    stop counting beeps against.
+
+    Draws label directly into the Preferences window's own content
+    area, overwriting whatever was there before -- assumes the current
+    port is still that window throughout, true for this whole call
+    chain since nothing between here and DoPreferences's own
+    SetPort(dlg) touches the current port. Only the most recent
+    checkpoint reached is ever visible, so whatever text is showing at
+    the moment of a hang directly answers "how far did it get" by
+    simply looking at the screen, with no timing involved. Remove every
+    call to this, and this function itself, once the hang is actually
+    located.
+*/
+static void DiagnosticCheckpoint(const char *label)
+{
+    Rect r;
+    Str255 s;
+    long len = (long) strlen(label);
+
+    SetRect(&r, 10, 250, 440, 268);
+    EraseRect(&r);
+    MoveTo(12, 262);
+    CopyToPascalString(label, len, s);
+    DrawString(s);
+}
+
+/*
     Defaults, per PREFERENCES_DESIGN.md section 4 -- used to populate
     gPrefs before any parsing happens (LoadPreferences), so a missing
     file, or any individual line that fails to parse, simply leaves
@@ -195,21 +230,32 @@ static void SetDefaultPreferences(void)
     graceful failure, the same class of risk already corrected once
     this session over Color QuickDraw.
 
-    Pre-System-7 fallback via SysEnvirons, now fully verified rather
-    than left as an unconfirmed stub -- Inside Macintosh (Operating
+    Pre-System-7 fallback via SysEnvirons -- Inside Macintosh (Operating
     System Utilities, "The System Environment Record") documents
     sysVRefNum explicitly as "the working directory reference number of
     the folder... containing the open System file," i.e. the System
-    Folder itself, not merely the startup volume. HCreate/HOpen's own
-    vRefNum parameter is separately documented to accept a working
-    directory reference number directly ("A volume reference number, a
-    working directory reference number, or 0 for the default volume"),
-    so sysVRefNum can be passed straight through with dirID 0 -- no
-    separate GetWDInfo expansion call needed. SysEnvirons itself needs
-    no capability gate the way FindFolder does: it's been part of the
-    Toolbox since System 4.1, older than this app's own System 6.0.8
-    minimum target, and is documented as the standard way to check for
-    other functionality when Gestalt itself might not be present.
+    Folder itself, not merely the startup volume, and HCreate/HOpen are
+    separately documented to accept a working directory reference
+    number directly as their own vRefNum parameter with dirID 0.
+
+    Honest status: a real hang has been reported on a genuine SE
+    running System 6.0.8, specifically when SavePreferences (HCreate,
+    actually creating the file for the first time) exercises this
+    fallback -- LoadPreferences's own HOpen call through the exact
+    same values doesn't hang, though since LoadPreferences is designed
+    to fall back to defaults silently on any failure, that only shows
+    HOpen doesn't hang here, not that these values are actually
+    correct. A first attempt used this direct passthrough; a second
+    attempt added GetWDInfo to resolve sysVRefNum to an explicit
+    (vRefNum, dirID) pair first, reasoning that HCreate creating a file
+    for the first time might be a genuinely different, more sensitive
+    path than HOpen's read attempt -- that didn't fix it either, so
+    this reverts to the simpler, direct form rather than keep adding
+    unverified complexity to a mechanism that's now failed twice.
+    DiagnosticCheckpoint calls below (see that function's own comment)
+    are temporary -- not a fix, a way to find out exactly where this
+    actually stops on real hardware, since two reasoned guesses in a
+    row haven't located it. Remove them once that's known.
 */
 static Boolean FindPrefsFileLocation(short *outVRefNum, long *outDirID)
 {
@@ -227,10 +273,14 @@ static Boolean FindPrefsFileLocation(short *outVRefNum, long *outDirID)
         }
     }
 
+    DiagnosticCheckpoint("5 trying System Folder fallback");
+
     {
         SysEnvRec envRec;
 
         if (SysEnvirons(curSysEnvVers, &envRec) == noErr) {
+            DiagnosticCheckpoint("6 SysEnvirons OK");
+
             *outVRefNum = envRec.sysVRefNum;
             *outDirID = 0;
             return true;
@@ -528,8 +578,19 @@ void SavePreferences(void)
     #undef WRITE_KEYVAL
     #undef WRITE_KEYINT
 
+    /* Defensive: len should never come close to buf's own 2048-byte
+       size given everything written above, but this guards against a
+       corrupted or unexpectedly large byte count ever reaching
+       FSWrite below -- a bug here (e.g. from a future addition to
+       this function) would otherwise hand FSWrite a bogus count
+       rather than fail visibly at the point of the actual mistake. */
+    if (len <= 0 || len > (long) sizeof(buf))
+        return;
+
     if (!FindPrefsFileLocation(&vRefNum, &dirID))
         return;
+
+    DiagnosticCheckpoint("7 location found");
 
     /* Result deliberately not checked -- matches file.c's own WriteFile
        convention exactly: if this fails because the file already
@@ -538,16 +599,28 @@ void SavePreferences(void)
        that's what's actually checked. */
     HCreate(vRefNum, dirID, kPrefsFileName, 'ArtT', 'PreF');
 
+    DiagnosticCheckpoint("8 HCreate returned");
+
     err = HOpen(vRefNum, dirID, kPrefsFileName, fsWrPerm, &refNum);
     if (err != noErr)
         return;
 
+    DiagnosticCheckpoint("9 HOpen OK");
+
     SetEOF(refNum, 0);
+
+    DiagnosticCheckpoint("10 SetEOF returned");
+
     {
         long count = len;
         FSWrite(refNum, &count, buf);
     }
+
+    DiagnosticCheckpoint("11 FSWrite returned");
+
     FSClose(refNum);
+
+    DiagnosticCheckpoint("12 FSClose returned, Save done");
 }
 
 /*
@@ -665,68 +738,40 @@ static short GetCheckedRadioItem(DialogPtr dlg, const short *items, short count)
 }
 
 /*
-    Menu ID for the temporary, never-in-the-menu-bar font list this
-    builds each time the font button (kPrefsFontNameItem) is clicked --
-    distinct from every real menu-bar ID (app.h's mApple/mFile/mEdit/
-    mStyle/mView/mHelp/mWindow, all under 134) so there's no risk of
-    colliding with one of those if this ever coexists with menu-bar
-    activity mid-dialog.
+    Resource ID shared by CNTL(200) and MENU(200) in main.r -- the
+    Markdown-font popup control (DITL 140 item 10) and its underlying
+    menu. popupUseAddResMenu (CNTL 200's own procID) makes the Control
+    Manager itself append one item per installed 'FOND' resource to
+    this menu automatically, at the moment GetNewDialog creates the
+    control -- no AppendResMenu call needed here; that's handled
+    entirely by the resource-level configuration. Rebuilt fresh every
+    time GetNewDialog runs (a new control instance each call), so the
+    list always reflects whatever's actually installed right now.
 */
 #define kFontPopupMenuID 200
 
 /*
-    Pops up a menu of actually-installed fonts anchored at buttonRect
-    (a dialog item's rect, in the dialog's own LOCAL coordinates) and
-    updates buttonH's title to whatever the user picks -- the font
-    button's (kPrefsFontNameItem) click handler in DoPreferences below.
-
-    Rebuilds the font list fresh on every call via AppendResMenu('FOND')
-    rather than caching a menu across calls or across the app's whole
-    run -- per explicit direction that this needs to be robust, a
-    freshly-built list is what guarantees it always reflects whatever's
-    actually installed right now, not whatever was installed whenever
-    the list was last built.
-
-    PopUpMenuSelect's own top/left parameters are documented as GLOBAL
-    screen coordinates, not local ones -- buttonRect, from GetDialogItem,
-    is in the dialog's own local space, so its top-left corner is
-    converted via LocalToGlobal before use; skipping that would anchor
-    the popup at the wrong place on screen (dialog-local coordinates
-    interpreted as if they were global ones).
-
-    A LoWord(result) of 0 means the user dismissed the menu without
-    picking anything (clicked elsewhere) -- title is left exactly as it
-    was in that case, not cleared or reset.
+    Which item number in the font popup's own (auto-populated) menu
+    matches a given font name -- used to set the control's value
+    (GetControlValue/SetControlValue track the popup's current
+    selection by item number, not by name) when pre-filling it from
+    scratch.markdownFontName. Falls back to item 1 if nothing matches,
+    which shouldn't happen in practice since the caller already runs
+    the name through FontIsInstalled first -- a defensive fallback
+    rather than a expected path.
 */
-static void ShowFontPopupMenu(ControlHandle buttonH, Rect buttonRect)
+static short FindFontMenuItemNumber(MenuHandle menu, const Str255 name)
 {
-    MenuHandle fontMenu;
-    Point anchor;
-    long result;
-    short chosenItem;
-    Str255 chosenName;
+    short count = CountMItems(menu);
+    short i;
+    Str255 itemName;
 
-    fontMenu = NewMenu(kFontPopupMenuID, "\p");
-    if (fontMenu == NULL)
-        return;
-
-    AppendResMenu(fontMenu, 'FOND');
-    InsertMenu(fontMenu, -1);
-
-    anchor.v = buttonRect.top;
-    anchor.h = buttonRect.left;
-    LocalToGlobal(&anchor);
-
-    result = PopUpMenuSelect(fontMenu, anchor.v, anchor.h, 0);
-    chosenItem = LoWord(result);
-
-    if (chosenItem != 0) {
-        GetMenuItemText(fontMenu, chosenItem, chosenName);
-        SetControlTitle(buttonH, chosenName);
+    for (i = 1; i <= count; i++) {
+        GetMenuItemText(menu, i, itemName);
+        if (EqualString(name, itemName, false, false))
+            return i;
     }
-
-    DeleteMenu(kFontPopupMenuID);
-    DisposeMenu(fontMenu);
+    return 1;
 }
 
 /*
@@ -805,7 +850,8 @@ void DoPreferences(void)
        deleted later in the same session, before this window opens. */
     if (!FontIsInstalled(scratch.markdownFontName))
         CopyToPascalString("Monaco", 6, scratch.markdownFontName);
-    SetControlTitle((ControlHandle) itemH, scratch.markdownFontName);
+    SetControlValue((ControlHandle) itemH,
+                     FindFontMenuItemNumber(GetMenu(kFontPopupMenuID), scratch.markdownFontName));
 
     GetDialogItem(dlg, kPrefsFontSizeItem, &itemType, &itemH, &itemRect);
     IntToPascalString(scratch.markdownFontSize, numStr);
@@ -841,13 +887,12 @@ void DoPreferences(void)
         } else if (itemHit == kPrefsColorModeItem && colorCapable) {
             GetDialogItem(dlg, kPrefsColorModeItem, &itemType, &itemH, &itemRect);
             SetControlValue((ControlHandle) itemH, (GetControlValue((ControlHandle) itemH) == 0) ? 1 : 0);
-        } else if (itemHit == kPrefsFontNameItem) {
-            GetDialogItem(dlg, kPrefsFontNameItem, &itemType, &itemH, &itemRect);
-            ShowFontPopupMenu((ControlHandle) itemH, itemRect);
         }
     }
 
     if (itemHit == kPrefsSaveItem) {
+        DiagnosticCheckpoint("1 Save clicked");
+
         scratch.defaultDistractionFree =
             (GetCheckedRadioItem(dlg, kWindowItems, 2) == kPrefsDistractionItem);
         scratch.defaultMarkdownMode =
@@ -876,8 +921,14 @@ void DoPreferences(void)
             scratch.markdownColorMode = false;
         }
 
+        DiagnosticCheckpoint("2 checkboxes/radios OK, reading font");
+
         GetDialogItem(dlg, kPrefsFontNameItem, &itemType, &itemH, &itemRect);
-        GetControlTitle((ControlHandle) itemH, scratch.markdownFontName);
+        GetMenuItemText(GetMenu(kFontPopupMenuID),
+                         GetControlValue((ControlHandle) itemH),
+                         scratch.markdownFontName);
+
+        DiagnosticCheckpoint("3 font popup read OK");
 
         GetDialogItem(dlg, kPrefsFontSizeItem, &itemType, &itemH, &itemRect);
         GetDialogItemText(itemH, numStr);
@@ -896,7 +947,12 @@ void DoPreferences(void)
         }
 
         gPrefs = scratch;
+
+        DiagnosticCheckpoint("4 all fields OK, calling SavePreferences");
+
         SavePreferences();
+
+        DiagnosticCheckpoint("13 SavePreferences returned, all done");
     }
 
     DisposeDialog(dlg);
