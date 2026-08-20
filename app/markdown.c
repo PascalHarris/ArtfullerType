@@ -18,74 +18,6 @@ typedef struct {
 } StyleOp;
 
 /*
-    Markdown view's unstyled/base text color -- PREFERENCES_DESIGN.md
-    section 8.4 flagged this as a genuine open question before this
-    milestone was implemented: whether text color should simply follow
-    markdownDarkMode's own boolean, or be derived from whether the
-    chosen backgroundColor is itself "light" or "dark" for better
-    contrast. Confirmed, by explicit direction: the simple boolean
-    approach, unconditionally -- if a chosen backgroundColor makes text
-    hard to read against it, that's the user's own choice to make, not
-    something this function should second-guess. No ScreenSupportsColor
-    gate needed: black and white are themselves always-representable
-    RGBColor values, unlike an arbitrary hue, and ClearStyles already
-    set tsColor unconditionally to plain {0,0,0} long before this
-    milestone existed with no capability check of its own -- this only
-    changes which of two fixed values that is.
-*/
-static RGBColor MarkdownUnstyledTextColor(void)
-{
-    RGBColor black = {0, 0, 0};
-    RGBColor white = {65535, 65535, 65535};
-
-    return gPrefs.markdownDarkMode ? white : black;
-}
-
-/*
-    Markdown view's background erase -- PREFERENCES_DESIGN.md section
-    8.4. Called from DoUpdate (main.c) in place of a plain EraseRect,
-    but only when the front document is actually showing Markdown view
-    (!doc->hideMarkdown) -- Writer mode stays on the ordinary,
-    unconditional EraseRect regardless of this preference, per that
-    section's own confirmed scope. Falls straight through to a normal
-    EraseRect when dark mode itself is off, so callers don't need their
-    own separate check for that.
-
-    RGBBackColor is a genuine Color QuickDraw trap (defs/CQuickDraw.yaml)
-    -- gated behind ScreenSupportsColor the same way this session
-    already learned is necessary for this whole class of call, since an
-    unimplemented trap on real pre-Color-QuickDraw hardware faults
-    outright rather than failing gracefully. The low-color branch uses
-    only EraseRect/InvertRect, both base QuickDraw, safe on any Mac --
-    exactly section 8.4's own confirmed degradation rule: black if
-    backgroundColor isn't whiteColor, otherwise the ordinary white.
-    Restores the back color to white afterward either way, so any
-    later drawing in this same update pass (DrawControls, DrawGrowIcon,
-    or Writer mode's own next update) doesn't inherit a stale dark
-    color it never explicitly set itself.
-*/
-void EraseMarkdownBackground(const Rect *r)
-{
-    if (!gPrefs.markdownDarkMode) {
-        EraseRect(r);
-        return;
-    }
-
-    if (ScreenSupportsColor()) {
-        RGBColor bgColor = NamedColorToRGB(gPrefs.backgroundColor);
-        RGBColor white = {65535, 65535, 65535};
-
-        RGBBackColor(&bgColor);
-        EraseRect(r);
-        RGBBackColor(&white);
-    } else {
-        EraseRect(r);
-        if (gPrefs.backgroundColor != kColorWhite)
-            InvertRect(r);
-    }
-}
-
-/*
     Color mode's syntax-coloring pass -- PREFERENCES_DESIGN.md section
     8.5. A second pass layered on top of ClearStyles's own uniform
     baseline, not a replacement for it: this only ever changes color on
@@ -114,6 +46,18 @@ void EraseMarkdownBackground(const Rect *r)
     side effect (populating doc->linkCount/linkURLs) is BuildHiddenView
     /Writer mode's own concern; this pass only needs each link's
     character range to color it, never its URL.
+
+    Resets the whole document's color to plain black before applying
+    any syntax-specific color, making this function self-contained and
+    correct regardless of caller -- necessary now that it can run
+    directly from a live-typing trigger (MaybeRecolorMarkdown), not
+    only via ClearStyles's own, already-baseline-setting call. Without
+    this reset, a range that WAS colored (e.g. **bold**) but no longer
+    matches any construct (more text typed immediately after it, so
+    the closing ** no longer ends the run there) would keep its stale
+    color indefinitely: this function only ever adds color to ranges
+    it currently detects, it never had a way to remove color from a
+    range that used to be a construct but isn't one anymore.
 */
 void ApplyMarkdownSyntaxColors(void)
 {
@@ -126,6 +70,7 @@ void ApplyMarkdownSyntaxColors(void)
     short k;
     short savedStart;
     short savedEnd;
+    TextStyle baseTs;
 
     if (!gPrefs.markdownColorMode || !ScreenSupportsColor())
         return;
@@ -137,6 +82,10 @@ void ApplyMarkdownSyntaxColors(void)
 
     savedStart = (**doc->te).selStart;
     savedEnd = (**doc->te).selEnd;
+
+    baseTs.tsColor.red = baseTs.tsColor.green = baseTs.tsColor.blue = 0;
+    TESetSelect(0, 32767, doc->te);
+    TESetStyle(doColor, &baseTs, true, doc->te);
 
     opCount = 0;
     srcH = (**doc->te).hText;
@@ -280,11 +229,11 @@ void ApplyMarkdownSyntaxColors(void)
 }
 
 /*
-    Markdown mode's own baseline: plain, uniform text at the current
-    zoom size, dark-mode-aware unstyled color. Selection is preserved
-    since this gets called after Style-menu edits that already placed
-    the caret somewhere meaningful. Color mode's own syntax-coloring
-    pass (ApplyMarkdownSyntaxColors, above) runs immediately afterward,
+    Markdown mode's own baseline: plain, uniform black text at the
+    current zoom size. Selection is preserved since this gets called
+    after Style-menu edits that already placed the caret somewhere
+    meaningful. Color mode's own syntax-coloring pass
+    (ApplyMarkdownSyntaxColors, above) runs immediately afterward,
     layered on top of this baseline rather than replacing it -- see
     that function's own comment.
 */
@@ -300,7 +249,7 @@ void ClearStyles(void)
     ts.tsFont = fontNum;
     ts.tsFace = normal;
     ts.tsSize = CurrentMarkdownFontSize();
-    ts.tsColor = MarkdownUnstyledTextColor();
+    ts.tsColor.red = ts.tsColor.green = ts.tsColor.blue = 0;
 
     TESetSelect(0, 32767, doc->te);
     TESetStyle(doFont + doFace + doSize + doColor, &ts, true, doc->te);
@@ -1314,6 +1263,45 @@ static void SetTypingStyleNormal(short pos)
     ts.tsSize = CurrentWriterFontSize();
     TESetSelect(pos, pos, doc->hiddenTE);
     TESetStyle(doFont + doFace + doSize, &ts, true, doc->hiddenTE);
+}
+
+/*
+    Markdown mode's own trigger for live color updates -- called after
+    every content keystroke while Markdown view is active, the same
+    place DetectInlineMarkdown is called for Writer mode. Not the same
+    mechanism, though: DetectInlineMarkdown works incrementally,
+    operating only on the just-completed span, which is what makes it
+    cheap enough to run after every keystroke. ApplyMarkdownSyntaxColors
+    has no equivalent incremental mode of its own -- it re-parses the
+    whole document every time it runs (the same reason it needed its
+    own watch-cursor precaution, mirroring BuildHiddenView's identical
+    concern).
+
+    Calls it on every content keystroke, not just ones that complete a
+    construct -- an earlier, narrower version only triggered on
+    specific "completing" characters (closing star/backtick/tilde/close
+    paren/newline), which turned out to be incomplete: text typed
+    immediately after a colored construct (e.g. "hello" right after
+    **text**) inherits that construct's own color at the moment of
+    insertion, via TextEdit's own style-inheritance behavior, and
+    nothing corrected it until some later, unrelated trigger character
+    happened to appear. Widened to every keystroke by explicit
+    direction, since this was called out as the more significant of two
+    reported issues. The performance cost of a full rescan on every
+    single keystroke, on a large document on real hardware, is real and
+    hasn't been verified either way -- worth watching for specifically
+    if typing responsiveness degrades on a long document with color
+    mode on.
+*/
+void MaybeRecolorMarkdown(char justTyped)
+{
+    DocumentPtr doc = FrontDocument();
+
+    if (!gPrefs.markdownColorMode || !ScreenSupportsColor())
+        return;
+
+    ApplyMarkdownSyntaxColors();
+    InvalRect(&doc->window->portRect);
 }
 
 /*

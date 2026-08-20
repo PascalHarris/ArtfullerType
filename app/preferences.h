@@ -24,8 +24,8 @@ typedef enum {
     and back to its file-format name string. The name<->NamedColor
     direction stays private (only LoadPreferences/SavePreferences ever
     need it, for parsing/writing the file itself) -- the RGBColor
-    direction is now public via NamedColorToRGB below, needed by R7/R8's
-    dark mode and color mode rendering (markdown.c).
+    direction is now public via NamedColorToRGB below, needed by color
+    mode's own rendering (markdown.c).
 */
 typedef enum {
     kColorBlack, kColorWhite, kColorRed, kColorGreen, kColorBlue,
@@ -45,7 +45,6 @@ typedef struct {
 
     short writerZoomIndex;          /* same index space as gWriterZoomIndex, zoom.c */
 
-    Boolean markdownDarkMode;
     Boolean markdownColorMode;      /* only meaningful on color-capable screens */
 
     LineEndingMode lineEnding;
@@ -54,7 +53,6 @@ typedef struct {
        window (see DoPreferences below), but still loaded/saved here so
        a Save from that window round-trips these untouched rather than
        silently resetting them to defaults. */
-    NamedColor backgroundColor;
     NamedColor headingColor;
     NamedColor linkColor;
     NamedColor emphasisColor;

@@ -206,7 +206,6 @@ short LineContaining(TEHandle te, short pos);
 
 /* markdown.c */
 void ClearStyles(void);
-void EraseMarkdownBackground(const Rect *r);
 void ApplyMarkdownSyntaxColors(void);
 void SuppressDrawing(TEHandle te, Rect *saved);
 void RestoreDrawing(TEHandle te, Rect *saved);
@@ -222,6 +221,7 @@ void DoLinkHidden(void);
 void ToggleCode(void);
 void ToggleHeadingHidden(short level);
 void DetectInlineMarkdown(char justTyped);
+void MaybeRecolorMarkdown(char justTyped);
 void ClearSelectionStyleHidden(void);
 void ClearMarkdownInSelection(void);
 short AddLinkURL(const unsigned char *url);

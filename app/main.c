@@ -481,10 +481,7 @@ static void DoUpdate(WindowPtr w)
 
     SetPort(w);
     BeginUpdate(w);
-    if (doc != NULL && !doc->hideMarkdown)
-        EraseMarkdownBackground(&w->portRect);
-    else
-        EraseRect(&w->portRect);
+    EraseRect(&w->portRect);
     if (doc != NULL) {
         TEUpdate(&w->portRect, doc->activeTE);
         DrawControls(w);
@@ -1034,6 +1031,8 @@ static void EventLoop(void)
                             doc->dirty = true;
                             if (doc->hideMarkdown)
                                 DetectInlineMarkdown(key);
+                            else
+                                MaybeRecolorMarkdown(key);
                         }
                         ScrollCaretIntoView();
                         UpdateScrollbarRange();

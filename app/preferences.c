@@ -245,12 +245,10 @@ static void SetDefaultPreferences(void)
 
     gPrefs.writerZoomIndex = kZoomBaselineIndex;
 
-    gPrefs.markdownDarkMode = false;
     gPrefs.markdownColorMode = false;
 
     gPrefs.lineEnding = kLineEndingMac;
 
-    gPrefs.backgroundColor = kColorWhite;
     gPrefs.headingColor = kColorLightBlue;
     gPrefs.linkColor = kColorDarkBlue;
     gPrefs.emphasisColor = kColorBrown;
@@ -356,9 +354,6 @@ static void ApplyPreferenceLine(const char *key, long keyLen,
     } else if (KEY_IS("writerZoomIndex")) {
         if (ParseInt(value, valueLen, &n) && n >= 0 && n < kNumZoomLevels)
             gPrefs.writerZoomIndex = (short) n;
-    } else if (KEY_IS("markdownDarkMode")) {
-        if (VALUE_IS("true")) gPrefs.markdownDarkMode = true;
-        else if (VALUE_IS("false")) gPrefs.markdownDarkMode = false;
     } else if (KEY_IS("markdownColorMode")) {
         if (VALUE_IS("true")) gPrefs.markdownColorMode = true;
         else if (VALUE_IS("false")) gPrefs.markdownColorMode = false;
@@ -366,9 +361,6 @@ static void ApplyPreferenceLine(const char *key, long keyLen,
         if (VALUE_IS("mac")) gPrefs.lineEnding = kLineEndingMac;
         else if (VALUE_IS("unix")) gPrefs.lineEnding = kLineEndingUnix;
         else if (VALUE_IS("windows")) gPrefs.lineEnding = kLineEndingWindows;
-    } else if (KEY_IS("backgroundColor")) {
-        NamedColor c;
-        if (NameToColor(value, valueLen, &c)) gPrefs.backgroundColor = c;
     } else if (KEY_IS("headingColor")) {
         NamedColor c;
         if (NameToColor(value, valueLen, &c)) gPrefs.headingColor = c;
@@ -588,7 +580,6 @@ void SavePreferences(void)
 
     WRITE_KEYINT("markdownFontSize", gPrefs.markdownFontSize);
     WRITE_KEYINT("writerZoomIndex", gPrefs.writerZoomIndex);
-    WRITE_KEYVAL("markdownDarkMode", gPrefs.markdownDarkMode ? "true" : "false");
     WRITE_KEYVAL("markdownColorMode", gPrefs.markdownColorMode ? "true" : "false");
 
     switch (gPrefs.lineEnding) {
@@ -598,10 +589,8 @@ void SavePreferences(void)
     }
 
     buf[len++] = '\r';
-    WRITE_LINE("// Colours used by colour mode (markdownColorMode) and by dark mode's");
-    WRITE_LINE("// background (markdownDarkMode) -- hand-edit only, not shown in the");
-    WRITE_LINE("// Preferences window.");
-    WRITE_KEYVAL("backgroundColor", ColorToName(gPrefs.backgroundColor));
+    WRITE_LINE("// Colours used by colour mode (markdownColorMode) -- hand-edit only,");
+    WRITE_LINE("// not shown in the Preferences window.");
     WRITE_KEYVAL("headingColor", ColorToName(gPrefs.headingColor));
     WRITE_KEYVAL("linkColor", ColorToName(gPrefs.linkColor));
     WRITE_KEYVAL("emphasisColor", ColorToName(gPrefs.emphasisColor));
@@ -882,8 +871,14 @@ void DoPreferences(void)
         SetRadioGroup(dlg, kLineEndItems, 3, lineEndItem);
     }
 
-    GetDialogItem(dlg, kPrefsDarkModeItem, &itemType, &itemH, &itemRect);
-    SetControlValue((ControlHandle) itemH, scratch.markdownDarkMode ? 1 : 0);
+    /* Dark mode temporarily removed -- see markdown.c's own ClearStyles
+       comment for the full removal rationale. Hidden, not deleted from
+       the DITL itself (main.r), so re-adding later doesn't require
+       renumbering every item after it
+       -- same reasoning as the color-mode checkbox's own hide just
+       below, for a different reason (screen capability there, a
+       temporary feature removal here). */
+    HideDialogItem(dlg, kPrefsDarkModeItem);
 
     colorCapable = ScreenSupportsColor();
     GetDialogItem(dlg, kPrefsColorModeItem, &itemType, &itemH, &itemRect);
@@ -932,9 +927,6 @@ void DoPreferences(void)
         } else if (itemHit == kPrefsLineEndMacItem || itemHit == kPrefsLineEndUnixItem ||
                    itemHit == kPrefsLineEndWinItem) {
             SetRadioGroup(dlg, kLineEndItems, 3, itemHit);
-        } else if (itemHit == kPrefsDarkModeItem) {
-            GetDialogItem(dlg, kPrefsDarkModeItem, &itemType, &itemH, &itemRect);
-            SetControlValue((ControlHandle) itemH, (GetControlValue((ControlHandle) itemH) == 0) ? 1 : 0);
         } else if (itemHit == kPrefsColorModeItem && colorCapable) {
             GetDialogItem(dlg, kPrefsColorModeItem, &itemType, &itemH, &itemRect);
             SetControlValue((ControlHandle) itemH, (GetControlValue((ControlHandle) itemH) == 0) ? 1 : 0);
@@ -956,9 +948,6 @@ void DoPreferences(void)
             else if (checked == kPrefsLineEndWinItem) scratch.lineEnding = kLineEndingWindows;
             else scratch.lineEnding = kLineEndingMac;
         }
-
-        GetDialogItem(dlg, kPrefsDarkModeItem, &itemType, &itemH, &itemRect);
-        scratch.markdownDarkMode = (GetControlValue((ControlHandle) itemH) != 0);
 
         if (colorCapable) {
             GetDialogItem(dlg, kPrefsColorModeItem, &itemType, &itemH, &itemRect);
@@ -1039,11 +1028,11 @@ void DoPreferences(void)
 
                 /* Same "apply live, not just on next launch" precedent
                    as Writer zoom just above, for whichever of
-                   markdownFontName/markdownFontSize/markdownDarkMode/
-                   markdownColorMode this window's Save button just
-                   changed -- ClearStyles reads gPrefs directly, so it
-                   picks up all of them at once without needing to
-                   track which one actually changed. */
+                   markdownFontName/markdownFontSize/markdownColorMode
+                   this window's Save button just changed -- ClearStyles
+                   reads gPrefs directly, so it picks up all of them at
+                   once without needing to track which one actually
+                   changed. */
                 if (saved) {
                     ClearStyles();
                     InvalRect(&front->window->portRect);
