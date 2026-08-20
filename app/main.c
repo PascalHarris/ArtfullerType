@@ -481,7 +481,10 @@ static void DoUpdate(WindowPtr w)
 
     SetPort(w);
     BeginUpdate(w);
-    EraseRect(&w->portRect);
+    if (doc != NULL && !doc->hideMarkdown)
+        EraseMarkdownBackground(&w->portRect);
+    else
+        EraseRect(&w->portRect);
     if (doc != NULL) {
         TEUpdate(&w->portRect, doc->activeTE);
         DrawControls(w);

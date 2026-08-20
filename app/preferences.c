@@ -83,6 +83,24 @@ static const char *ColorToName(NamedColor color)
 }
 
 /*
+    Resolves a NamedColor to its real RGBColor -- the accessor the
+    kColorTable comment above said would be needed once dark mode/color
+    mode rendering existed (R7/R8, PREFERENCES_DESIGN.md sections
+    8.4/8.5). Falls back to black for an out-of-range value, matching
+    ColorToName's own fallback convention just above.
+*/
+RGBColor NamedColorToRGB(NamedColor color)
+{
+    short i;
+
+    for (i = 0; i < (short) kNumColors; i++) {
+        if (kColorTable[i].color == color)
+            return kColorTable[i].rgb;
+    }
+    return kColorTable[0].rgb; /* shouldn't happen; fall back to black */
+}
+
+/*
     Small, self-contained integer parse/format helpers -- deliberately
     not NumToString/StringToNum (Pascal-string based) or sprintf
     (unverified in this toolchain, and nothing elsewhere in this
@@ -842,6 +860,7 @@ void DoPreferences(void)
     static const short kViewItems[] = { kPrefsWriterItem, kPrefsMarkdownItem };
     static const short kLineEndItems[] = { kPrefsLineEndMacItem, kPrefsLineEndUnixItem, kPrefsLineEndWinItem };
     Boolean colorCapable;
+    Boolean saved = false;
 
     scratch = gPrefs;
 
@@ -985,6 +1004,8 @@ void DoPreferences(void)
         SavePreferences();
 
         DiagnosticCheckpoint("13 SavePreferences returned, all done");
+
+        saved = true;
     }
 
     DisposeDialog(dlg);
@@ -1015,6 +1036,18 @@ void DoPreferences(void)
                    updating either way, so the value itself is never
                    lost -- only the live rescale is conditional. */
                 gWriterZoomIndex = gPrefs.writerZoomIndex;
+
+                /* Same "apply live, not just on next launch" precedent
+                   as Writer zoom just above, for whichever of
+                   markdownFontName/markdownFontSize/markdownDarkMode/
+                   markdownColorMode this window's Save button just
+                   changed -- ClearStyles reads gPrefs directly, so it
+                   picks up all of them at once without needing to
+                   track which one actually changed. */
+                if (saved) {
+                    ClearStyles();
+                    InvalRect(&front->window->portRect);
+                }
             } else {
                 ApplyWriterZoomIndex(gPrefs.writerZoomIndex);
             }

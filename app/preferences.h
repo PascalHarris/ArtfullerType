@@ -21,10 +21,11 @@ typedef enum {
     One entry per color name in section 3's table. Used for all five
     *Color fields below; preferences.c's own color table (private to
     that file) is what actually maps each of these to a real RGBColor
-    and back to its file-format name string -- nothing outside
-    preferences.c needs those two mappings yet (no caller until later
-    milestones wire up dark mode/color mode rendering), so they're not
-    exposed here.
+    and back to its file-format name string. The name<->NamedColor
+    direction stays private (only LoadPreferences/SavePreferences ever
+    need it, for parsing/writing the file itself) -- the RGBColor
+    direction is now public via NamedColorToRGB below, needed by R7/R8's
+    dark mode and color mode rendering (markdown.c).
 */
 typedef enum {
     kColorBlack, kColorWhite, kColorRed, kColorGreen, kColorBlue,
@@ -66,6 +67,7 @@ extern Preferences gPrefs;
 void LoadPreferences(void);
 void SavePreferences(void);
 void DoPreferences(void);
+RGBColor NamedColorToRGB(NamedColor color);
 
 /*
     Whether the current screen can show actual color (Color QuickDraw

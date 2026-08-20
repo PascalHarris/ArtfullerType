@@ -206,6 +206,8 @@ short LineContaining(TEHandle te, short pos);
 
 /* markdown.c */
 void ClearStyles(void);
+void EraseMarkdownBackground(const Rect *r);
+void ApplyMarkdownSyntaxColors(void);
 void SuppressDrawing(TEHandle te, Rect *saved);
 void RestoreDrawing(TEHandle te, Rect *saved);
 void BuildHiddenView(void);

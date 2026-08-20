@@ -1,4 +1,5 @@
 #include "app.h"
+#include "preferences.h"
 
 /*
     Whether name's last 3 characters are ".md", case-insensitively --
@@ -57,6 +58,80 @@ static void EnsureMarkdownExtension(Str255 name)
     name[0] = (unsigned char) (len + 3);
 }
 
+/*
+    Normalizes CR, LF, and CRLF line endings to plain CR, in place
+    within buf -- TextEdit's own paragraph separator is always CR, so
+    this has to run before TEInsert ever sees the bytes, regardless of
+    gPrefs.lineEnding; reading is tolerant of any convention, the
+    preference only affects what gets written back out. Safe to do in
+    place (rather than into a second buffer) because normalizing to CR
+    can only ever shrink the data -- CRLF becomes one byte (CR), never
+    more -- so the write cursor (dst) can never run ahead of the read
+    cursor (src) it's consuming from. Returns the new, possibly
+    shorter length; the caller's own buffer size is untouched, since
+    this never needs more room than it started with.
+*/
+static long NormalizeLineEndingsToCR(char *buf, long len)
+{
+    long src = 0;
+    long dst = 0;
+
+    while (src < len) {
+        if (buf[src] == '\r') {
+            buf[dst++] = '\r';
+            src++;
+            if (src < len && buf[src] == '\n')
+                src++; /* CRLF -- both bytes collapse to the one CR just written */
+        } else if (buf[src] == '\n') {
+            buf[dst++] = '\r';
+            src++;
+        } else {
+            buf[dst++] = buf[src++];
+        }
+    }
+    return dst;
+}
+
+/*
+    Translates the internal, always-CR text in src into whichever line
+    ending gPrefs.lineEnding specifies, writing the result into dst --
+    a separate buffer from src, per the milestone's own requirement
+    that the in-memory TE record stay untouched/still CR-based
+    regardless of what's written to disk. dst must have room for up to
+    2*len bytes: CR->CRLF is the only case that grows the data, and it
+    can only ever add one byte per source byte, in the worst case
+    (every byte a CR) doubling the total -- confirmed safe against
+    32-bit overflow since TERec's own teLength field is a 16-bit
+    INTEGER (defs/TextEdit.yaml), capping len at 32767 long before
+    2*len could ever approach a long's own range. Returns the actual
+    output length written.
+*/
+static long TranslateLineEndingsForSave(const char *src, long len, char *dst)
+{
+    long i;
+    long outLen = 0;
+
+    for (i = 0; i < len; i++) {
+        if (src[i] == '\r') {
+            switch (gPrefs.lineEnding) {
+                case kLineEndingUnix:
+                    dst[outLen++] = '\n';
+                    break;
+                case kLineEndingWindows:
+                    dst[outLen++] = '\r';
+                    dst[outLen++] = '\n';
+                    break;
+                default: /* kLineEndingMac */
+                    dst[outLen++] = '\r';
+                    break;
+            }
+        } else {
+            dst[outLen++] = src[i];
+        }
+    }
+    return outLen;
+}
+
 static void RefreshActiveView(DocumentPtr doc)
 {
     if (doc->hideMarkdown)
@@ -99,19 +174,32 @@ static void WriteFile(StringPtr name, short vRefNum)
     short refNum;
     long count;
     Handle textH = (**doc->te).hText;
+    long srcLen = (**doc->te).teLength;
+    Handle outH;
     OSErr err;
+
+    outH = NewHandle(srcLen * 2);
+    if (outH == NULL)
+        return;
+
+    HLock(textH);
+    HLock(outH);
+    count = TranslateLineEndingsForSave(*textH, srcLen, *outH);
+    HUnlock(textH);
 
     Create(name, vRefNum, 'ArtT', 'TEXT');
 
     err = FSOpen(name, vRefNum, &refNum);
-    if (err != noErr)
+    if (err != noErr) {
+        HUnlock(outH);
+        DisposeHandle(outH);
         return;
+    }
 
     SetEOF(refNum, 0);
-    count = (**doc->te).teLength;
-    HLock(textH);
-    FSWrite(refNum, &count, *textH);
-    HUnlock(textH);
+    FSWrite(refNum, &count, *outH);
+    HUnlock(outH);
+    DisposeHandle(outH);
     FSClose(refNum);
 }
 
@@ -134,6 +222,8 @@ static void ReadFile(StringPtr name, short vRefNum)
     count = eof;
     FSRead(refNum, &count, *textH);
     FSClose(refNum);
+
+    count = NormalizeLineEndingsToCR(*textH, count);
 
     TESetSelect(0, 32767, doc->te);
     TEDelete(doc->te);

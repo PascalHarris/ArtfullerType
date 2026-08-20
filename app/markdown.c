@@ -12,11 +12,281 @@ short AddLinkURL(const unsigned char *url)
     return doc->linkCount;
 }
 
+typedef struct {
+    short start, end, kind, level;
+    short linkID;
+} StyleOp;
+
 /*
-    Markdown mode shows raw syntax with no visual styling at all -- just
-    plain uniform text at the current zoom size. Selection is preserved
+    Markdown view's unstyled/base text color -- PREFERENCES_DESIGN.md
+    section 8.4 flagged this as a genuine open question before this
+    milestone was implemented: whether text color should simply follow
+    markdownDarkMode's own boolean, or be derived from whether the
+    chosen backgroundColor is itself "light" or "dark" for better
+    contrast. Confirmed, by explicit direction: the simple boolean
+    approach, unconditionally -- if a chosen backgroundColor makes text
+    hard to read against it, that's the user's own choice to make, not
+    something this function should second-guess. No ScreenSupportsColor
+    gate needed: black and white are themselves always-representable
+    RGBColor values, unlike an arbitrary hue, and ClearStyles already
+    set tsColor unconditionally to plain {0,0,0} long before this
+    milestone existed with no capability check of its own -- this only
+    changes which of two fixed values that is.
+*/
+static RGBColor MarkdownUnstyledTextColor(void)
+{
+    RGBColor black = {0, 0, 0};
+    RGBColor white = {65535, 65535, 65535};
+
+    return gPrefs.markdownDarkMode ? white : black;
+}
+
+/*
+    Markdown view's background erase -- PREFERENCES_DESIGN.md section
+    8.4. Called from DoUpdate (main.c) in place of a plain EraseRect,
+    but only when the front document is actually showing Markdown view
+    (!doc->hideMarkdown) -- Writer mode stays on the ordinary,
+    unconditional EraseRect regardless of this preference, per that
+    section's own confirmed scope. Falls straight through to a normal
+    EraseRect when dark mode itself is off, so callers don't need their
+    own separate check for that.
+
+    RGBBackColor is a genuine Color QuickDraw trap (defs/CQuickDraw.yaml)
+    -- gated behind ScreenSupportsColor the same way this session
+    already learned is necessary for this whole class of call, since an
+    unimplemented trap on real pre-Color-QuickDraw hardware faults
+    outright rather than failing gracefully. The low-color branch uses
+    only EraseRect/InvertRect, both base QuickDraw, safe on any Mac --
+    exactly section 8.4's own confirmed degradation rule: black if
+    backgroundColor isn't whiteColor, otherwise the ordinary white.
+    Restores the back color to white afterward either way, so any
+    later drawing in this same update pass (DrawControls, DrawGrowIcon,
+    or Writer mode's own next update) doesn't inherit a stale dark
+    color it never explicitly set itself.
+*/
+void EraseMarkdownBackground(const Rect *r)
+{
+    if (!gPrefs.markdownDarkMode) {
+        EraseRect(r);
+        return;
+    }
+
+    if (ScreenSupportsColor()) {
+        RGBColor bgColor = NamedColorToRGB(gPrefs.backgroundColor);
+        RGBColor white = {65535, 65535, 65535};
+
+        RGBBackColor(&bgColor);
+        EraseRect(r);
+        RGBBackColor(&white);
+    } else {
+        EraseRect(r);
+        if (gPrefs.backgroundColor != kColorWhite)
+            InvertRect(r);
+    }
+}
+
+/*
+    Color mode's syntax-coloring pass -- PREFERENCES_DESIGN.md section
+    8.5. A second pass layered on top of ClearStyles's own uniform
+    baseline, not a replacement for it: this only ever changes color on
+    the runs it detects, never font or size. No-ops immediately unless
+    both markdownColorMode is on AND the screen is color-capable --
+    checked here, not left to callers, since a hand-edited preferences
+    file (section 3's own hand-editable text format) could set
+    markdownColorMode true on a machine the Preferences window's own
+    checkbox-hiding never had a chance to gate.
+
+    Mirrors BuildHiddenView's own syntax-recognition rules exactly
+    (confirmed by reading that function directly, not assumed) --
+    same heading/bold/italic/code/link detection, so color mode agrees
+    with Writer mode about what counts as each construct. Deliberately
+    NOT a call into BuildHiddenView itself, though: that function's own
+    StyleOp ranges are expressed in hiddenTE's stripped coordinate
+    space (delimiters removed), but this needs doc->te's raw,
+    unstripped space instead, since color mode colors the delimiters
+    together with their content, in place, rather than stripping
+    anything. Also detects ~~strikethrough~~, which BuildHiddenView
+    itself deliberately skips (no native strikethrough text attribute
+    on classic Mac to render it with) -- color mode isn't limited by
+    that, since color itself is representable regardless.
+
+    Does not call AddLinkURL for detected links -- that call's own
+    side effect (populating doc->linkCount/linkURLs) is BuildHiddenView
+    /Writer mode's own concern; this pass only needs each link's
+    character range to color it, never its URL.
+*/
+void ApplyMarkdownSyntaxColors(void)
+{
+    DocumentPtr doc = FrontDocument();
+    Handle srcH;
+    long len;
+    long i;
+    static StyleOp ops[MAX_STYLE_OPS];
+    short opCount;
+    short k;
+    short savedStart;
+    short savedEnd;
+
+    if (!gPrefs.markdownColorMode || !ScreenSupportsColor())
+        return;
+
+    /* Same reasoning as BuildHiddenView's own identical precaution:
+       not a speedup, just stops this from looking broken while it
+       runs on real 68000 hardware. */
+    SetCursor(*GetCursor(watchCursor));
+
+    savedStart = (**doc->te).selStart;
+    savedEnd = (**doc->te).selEnd;
+
+    opCount = 0;
+    srcH = (**doc->te).hText;
+    len = (**doc->te).teLength;
+
+    HLock(srcH);
+
+    i = 0;
+    while (i < len) {
+        if (i == 0 || (*srcH)[i - 1] == '\r') {
+            short level = 0;
+
+            while (level < 3 && i + level < len && (*srcH)[i + level] == '#')
+                level++;
+            if (level > 0 && i + level < len && (*srcH)[i + level] == ' ') {
+                long lineEnd = i + level + 1;
+
+                while (lineEnd < len && (*srcH)[lineEnd] != '\r')
+                    lineEnd++;
+                if (opCount < MAX_STYLE_OPS) {
+                    ops[opCount].start = (short) i;
+                    ops[opCount].end = (short) lineEnd;
+                    ops[opCount].kind = 'H';
+                    opCount++;
+                }
+                i = lineEnd;
+                continue;
+            }
+        }
+
+        if (i + 1 < len && (*srcH)[i] == '~' && (*srcH)[i + 1] == '~') {
+            long j = i + 2;
+
+            while (j + 1 < len && !((*srcH)[j] == '~' && (*srcH)[j + 1] == '~'))
+                j++;
+            if (j + 1 < len) {
+                if (opCount < MAX_STYLE_OPS) {
+                    ops[opCount].start = (short) i;
+                    ops[opCount].end = (short) (j + 2);
+                    ops[opCount].kind = 'B'; /* emphasisColor -- same as bold/italic */
+                    opCount++;
+                }
+                i = j + 2;
+                continue;
+            }
+        }
+        if (i + 1 < len && (*srcH)[i] == '*' && (*srcH)[i + 1] == '*') {
+            long j = i + 2;
+
+            while (j + 1 < len && !((*srcH)[j] == '*' && (*srcH)[j + 1] == '*'))
+                j++;
+            if (j + 1 < len) {
+                if (opCount < MAX_STYLE_OPS) {
+                    ops[opCount].start = (short) i;
+                    ops[opCount].end = (short) (j + 2);
+                    ops[opCount].kind = 'B';
+                    opCount++;
+                }
+                i = j + 2;
+                continue;
+            }
+        }
+        if ((*srcH)[i] == '*') {
+            long j = i + 1;
+
+            while (j < len && (*srcH)[j] != '*')
+                j++;
+            if (j < len) {
+                if (opCount < MAX_STYLE_OPS) {
+                    ops[opCount].start = (short) i;
+                    ops[opCount].end = (short) (j + 1);
+                    ops[opCount].kind = 'I';
+                    opCount++;
+                }
+                i = j + 1;
+                continue;
+            }
+        }
+        if ((*srcH)[i] == '`') {
+            long j = i + 1;
+
+            while (j < len && (*srcH)[j] != '`')
+                j++;
+            if (j < len) {
+                if (opCount < MAX_STYLE_OPS) {
+                    ops[opCount].start = (short) i;
+                    ops[opCount].end = (short) (j + 1);
+                    ops[opCount].kind = 'C';
+                    opCount++;
+                }
+                i = j + 1;
+                continue;
+            }
+        }
+        if ((*srcH)[i] == '[') {
+            long closeBracket = i + 1;
+
+            while (closeBracket < len && (*srcH)[closeBracket] != ']')
+                closeBracket++;
+            if (closeBracket < len && closeBracket + 1 < len && (*srcH)[closeBracket + 1] == '(') {
+                long closeParen = closeBracket + 2;
+
+                while (closeParen < len && (*srcH)[closeParen] != ')')
+                    closeParen++;
+                if (closeParen < len) {
+                    if (opCount < MAX_STYLE_OPS) {
+                        ops[opCount].start = (short) i;
+                        ops[opCount].end = (short) (closeParen + 1);
+                        ops[opCount].kind = 'L';
+                        opCount++;
+                    }
+                    i = closeParen + 1;
+                    continue;
+                }
+            }
+        }
+
+        i++;
+    }
+
+    HUnlock(srcH);
+
+    for (k = 0; k < opCount; k++) {
+        TextStyle ts;
+
+        switch (ops[k].kind) {
+            case 'H': ts.tsColor = NamedColorToRGB(gPrefs.headingColor);  break;
+            case 'L': ts.tsColor = NamedColorToRGB(gPrefs.linkColor);     break;
+            case 'B': /* fall through -- bold/italic/strikethrough all emphasisColor */
+            case 'I': ts.tsColor = NamedColorToRGB(gPrefs.emphasisColor); break;
+            case 'C': ts.tsColor = NamedColorToRGB(gPrefs.codeColor);     break;
+            default:  continue;
+        }
+        TESetSelect(ops[k].start, ops[k].end, doc->te);
+        TESetStyle(doColor, &ts, true, doc->te);
+    }
+
+    TESetSelect(savedStart, savedEnd, doc->te);
+
+    InitCursor();
+}
+
+/*
+    Markdown mode's own baseline: plain, uniform text at the current
+    zoom size, dark-mode-aware unstyled color. Selection is preserved
     since this gets called after Style-menu edits that already placed
-    the caret somewhere meaningful.
+    the caret somewhere meaningful. Color mode's own syntax-coloring
+    pass (ApplyMarkdownSyntaxColors, above) runs immediately afterward,
+    layered on top of this baseline rather than replacing it -- see
+    that function's own comment.
 */
 void ClearStyles(void)
 {
@@ -30,18 +300,15 @@ void ClearStyles(void)
     ts.tsFont = fontNum;
     ts.tsFace = normal;
     ts.tsSize = CurrentMarkdownFontSize();
-    ts.tsColor.red = ts.tsColor.green = ts.tsColor.blue = 0;
+    ts.tsColor = MarkdownUnstyledTextColor();
 
     TESetSelect(0, 32767, doc->te);
     TESetStyle(doFont + doFace + doSize + doColor, &ts, true, doc->te);
 
     TESetSelect(savedStart, savedEnd, doc->te);
-}
 
-typedef struct {
-    short start, end, kind, level;
-    short linkID;
-} StyleOp;
+    ApplyMarkdownSyntaxColors();
+}
 
 /*
     Builds the hidden (Writer-mode) TE from the canonical TE's markdown
