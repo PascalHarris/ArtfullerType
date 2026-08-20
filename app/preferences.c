@@ -191,6 +191,24 @@ static void DiagnosticCheckpoint(const char *label)
 }
 
 /*
+    DIAGNOSTIC ONLY -- see DiagnosticCheckpoint's own comment above.
+    Same thing, but with a number appended after the label -- used to
+    show write progress (bytes written so far vs. total) and refNum's
+    actual value, neither of which the plain string version can show.
+*/
+static void DiagnosticCheckpointN(const char *prefix, long n)
+{
+    char msg[48];
+    long prefixLen = (long) strlen(prefix);
+
+    BlockMove((Ptr) prefix, (Ptr) msg, (Size) prefixLen);
+    prefixLen += AppendInt(msg + prefixLen, n);
+    msg[prefixLen] = 0;
+
+    DiagnosticCheckpoint(msg);
+}
+
+/*
     Defaults, per PREFERENCES_DESIGN.md section 4 -- used to populate
     gPrefs before any parsing happens (LoadPreferences), so a missing
     file, or any individual line that fails to parse, simply leaves
@@ -238,24 +256,22 @@ static void SetDefaultPreferences(void)
     separately documented to accept a working directory reference
     number directly as their own vRefNum parameter with dirID 0.
 
-    Honest status: a real hang has been reported on a genuine SE
-    running System 6.0.8, specifically when SavePreferences (HCreate,
-    actually creating the file for the first time) exercises this
-    fallback -- LoadPreferences's own HOpen call through the exact
-    same values doesn't hang, though since LoadPreferences is designed
-    to fall back to defaults silently on any failure, that only shows
-    HOpen doesn't hang here, not that these values are actually
-    correct. A first attempt used this direct passthrough; a second
-    attempt added GetWDInfo to resolve sysVRefNum to an explicit
-    (vRefNum, dirID) pair first, reasoning that HCreate creating a file
-    for the first time might be a genuinely different, more sensitive
-    path than HOpen's read attempt -- that didn't fix it either, so
-    this reverts to the simpler, direct form rather than keep adding
-    unverified complexity to a mechanism that's now failed twice.
-    DiagnosticCheckpoint calls below (see that function's own comment)
-    are temporary -- not a fix, a way to find out exactly where this
-    actually stops on real hardware, since two reasoned guesses in a
-    row haven't located it. Remove them once that's known.
+    Status, updated with actual diagnostic evidence rather than
+    reasoning alone: this function is confirmed working correctly on
+    the SE (System 6.0.8) that reported the original hang -- the
+    checkpoints covering it (main.r/DoPreferences numbering: "5 trying
+    System Folder fallback" through "7 location found") all fire, and
+    HCreate/HOpen/SetEOF all subsequently succeed using the (vRefNum,
+    dirID) pair this function returns. A first attempt at this function
+    used the direct sysVRefNum+dirID=0 passthrough seen below; a second
+    attempt added GetWDInfo to resolve sysVRefNum to an explicit pair
+    first, reasoning that HCreate creating a file for the first time
+    might be a genuinely different, more sensitive path than HOpen's
+    read attempt -- neither attempt turned out to be addressing the
+    real problem, which checkpoint-based diagnosis later confirmed is
+    actually inside FSWrite (SavePreferences), unrelated to anything in
+    this function. Reverted to the simpler, direct form here since
+    GetWDInfo never demonstrated any benefit.
 */
 static Boolean FindPrefsFileLocation(short *outVRefNum, long *outDirID)
 {
@@ -605,15 +621,31 @@ void SavePreferences(void)
     if (err != noErr)
         return;
 
-    DiagnosticCheckpoint("9 HOpen OK");
+    DiagnosticCheckpointN("9 HOpen OK, refNum=", refNum);
 
     SetEOF(refNum, 0);
 
     DiagnosticCheckpoint("10 SetEOF returned");
 
     {
-        long count = len;
-        FSWrite(refNum, &count, buf);
+        long remaining = len;
+        long written = 0;
+        OSErr writeErr = noErr;
+
+        while (remaining > 0 && writeErr == noErr) {
+            long chunkSize = (remaining < 128) ? remaining : 128;
+            long count = chunkSize;
+
+            writeErr = FSWrite(refNum, &count, buf + written);
+
+            written += count;
+            remaining -= count;
+
+            DiagnosticCheckpointN("14 wrote ", written);
+        }
+
+        if (writeErr != noErr)
+            DiagnosticCheckpointN("15 FSWrite failed, err=", writeErr);
     }
 
     DiagnosticCheckpoint("11 FSWrite returned");
@@ -956,6 +988,43 @@ void DoPreferences(void)
     }
 
     DisposeDialog(dlg);
+
+    /* Must run before anything else below, including UpdateMenuBarLook
+       -- DisposeDialog just disposed the same window SetPort(dlg) made
+       current at the top of this function, leaving thePort dangling.
+       document.c's own ReHouseDocument has already hit this exact
+       hazard once (its own comment: "DisposeWindow while doc->window is
+       the current port leaves thePort dangling... nothing may be
+       inserted between these two calls that touches the port") --
+       heap corruption, not merely a logic error, there and here alike.
+       Every call below that could draw (ApplyWriterZoomIndex's own
+       TESetStyle/AdjustScrollbar/InvalRect, SavePreferences's own
+       DiagnosticCheckpoint) was running through that dangling pointer
+       until this fix. */
+    {
+        DocumentPtr front = FrontDocument();
+
+        if (front != NULL) {
+            SetPort(front->window);
+            if (!front->hideMarkdown) {
+                /* Writer zoom has no visible effect on Markdown view
+                   (doc->te, not doc->hiddenTE) -- per explicit
+                   direction, skip rescaling/redrawing entirely rather
+                   than do invisible work while looking at Markdown.
+                   gWriterZoomIndex/gPrefs.writerZoomIndex still need
+                   updating either way, so the value itself is never
+                   lost -- only the live rescale is conditional. */
+                gWriterZoomIndex = gPrefs.writerZoomIndex;
+            } else {
+                ApplyWriterZoomIndex(gPrefs.writerZoomIndex);
+            }
+        } else {
+            GrafPtr wMgrPort;
+
+            GetWMgrPort(&wMgrPort);
+            SetPort(wMgrPort);
+        }
+    }
 
     /* Matches this codebase's existing pattern (AskSaveChanges,
        DoOpenFile/DoSaveAs after SFGetFile/SFPutFile) of refreshing the

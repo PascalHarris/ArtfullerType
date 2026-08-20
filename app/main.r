@@ -184,10 +184,6 @@ resource 'DLOG' (140) {
     centerMainScreen
 };
 
-data 'ZLvl' (128) {
-    $"0002"
-};
-
 data 'ZLvl' (129) {
     $"0002"
 };

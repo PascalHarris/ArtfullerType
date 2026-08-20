@@ -29,10 +29,11 @@
     side.
 
     Still a compile-time constant, not a real preference -- genuinely
-    should become one (a per-user saved setting, the same way zoom
-    already is via kZoomPrefType/kWriterZoomPrefID/kMarkdownZoomPrefID
-    in zoom.c), just not part of this pass. Flagging rather than
-    building preference storage unasked.
+    should become one (a per-user saved setting, the same way Markdown
+    zoom already is via kZoomPrefType/kMarkdownZoomPrefID in zoom.c;
+    Writer zoom moved to gPrefs.writerZoomIndex, preferences.c, per
+    PREFERENCES_DESIGN.md section 8.3), just not part of this pass.
+    Flagging rather than building preference storage unasked.
 */
 #define MARGIN_H     8
 #define MARGIN_TOP   8
@@ -161,7 +162,6 @@
 #define kZoomBaselineIndex 2
 
 #define kZoomPrefType       'ZLvl'
-#define kWriterZoomPrefID   128
 #define kMarkdownZoomPrefID 129
 
 /*
@@ -241,6 +241,7 @@ short CurrentMarkdownFontSize(void);
 void LoadZoomPref(void);
 void DoZoom(short direction);
 void DoZoomReset(void);
+void ApplyWriterZoomIndex(short newIndex);
 
 /* file.c */
 void SetViewMode(Boolean hideMarkdown);

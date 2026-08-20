@@ -1,4 +1,5 @@
 #include "app.h"
+#include "preferences.h"
 
 DocumentRecord gDocuments[MAX_DOCUMENTS];
 
@@ -276,16 +277,17 @@ DocumentPtr CreateNewDocument(void)
 
     BuildWindowChrome(doc, &bounds, zoomDocProc, true, &viewRect);
 
-    GetFNum("\pTimes", &fontNum);
+    GetFNum(gPrefs.markdownFontName, &fontNum);
     TextFont(fontNum);
-
     TextSize(CurrentMarkdownFontSize());
     doc->te = TEStyleNew(&viewRect, &viewRect);
 
+    GetFNum("\pTimes", &fontNum);
+    TextFont(fontNum);
     TextSize(CurrentWriterFontSize());
     doc->hiddenTE = TEStyleNew(&viewRect, &viewRect);
 
-    doc->hideMarkdown = true;
+    doc->hideMarkdown = !gPrefs.defaultMarkdownMode;
     doc->activeTE = doc->hideMarkdown ? doc->hiddenTE : doc->te;
     TEActivate(doc->activeTE);
 
@@ -320,6 +322,9 @@ DocumentPtr CreateNewDocument(void)
 
     UpdateWindowTitle(doc);
     AdjustScrollbar();
+
+    if (gPrefs.defaultDistractionFree)
+        SetDistractionFree(doc, true);
 
     return doc;
 }

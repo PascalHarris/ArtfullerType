@@ -1,4 +1,5 @@
 #include "app.h"
+#include "preferences.h"
 
 short AddLinkURL(const unsigned char *url)
 {
@@ -25,7 +26,7 @@ void ClearStyles(void)
     short savedStart = (**doc->te).selStart;
     short savedEnd = (**doc->te).selEnd;
 
-    GetFNum("\pMonaco", &fontNum);
+    GetFNum(gPrefs.markdownFontName, &fontNum);
     ts.tsFont = fontNum;
     ts.tsFace = normal;
     ts.tsSize = CurrentMarkdownFontSize();

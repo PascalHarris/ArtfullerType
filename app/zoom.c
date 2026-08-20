@@ -1,22 +1,39 @@
 #include "app.h"
+#include "preferences.h"
 
-/* Zoom levels (point deltas from FONT_SIZE). 12/14/18/24pt have a real
-   Times bitmap -- confirmed by reading the FOND resource directly rather
-   than assuming. The 30pt level has no native bitmap (24pt is the
-   largest this font has) and renders as a scaled enlargement of the
-   24pt bitmap instead -- a known, accepted tradeoff for going bigger.
-   Shared by both Writer and Markdown zoom -- same discrete step sizes,
-   just applied via two independent indices (see app.h). */
-static short kZoomLevels[] = { -6, -4, 0, 6, 12 };
+/* Writer zoom levels (point deltas from FONT_SIZE, 18pt). 12/14/18/24pt
+   have a real Times bitmap -- confirmed by reading the FOND resource
+   directly rather than assuming. The 30pt level has no native bitmap
+   (24pt is the largest this font has) and renders as a scaled
+   enlargement of the 24pt bitmap instead -- a known, accepted tradeoff
+   for going bigger. */
+static short kWriterZoomLevels[] = { -6, -4, 0, 6, 12 };
+
+/* Markdown zoom levels (point deltas from gPrefs.markdownFontSize, 9pt
+   by default) -- deliberately a separate table from Writer's, not the
+   same offsets applied to a different baseline: those offsets
+   (-6/-4/0/6/12) come out to {3,5,9,15,21} against a 9pt baseline, and
+   3-5pt text isn't usable at all. Unlike the Times table's own comment
+   above, this hasn't been verified by reading Monaco's actual FOND
+   resource -- no font resource data was available to check it against
+   directly, so this is a reasoned starting point, not a confirmed one:
+   {7,8,9,12,18}, chosen so the baseline (9pt) sits at index
+   kZoomBaselineIndex like every other zoom table in this app, with 12pt
+   being Monaco's other well-known classic bitmap size one step up, and
+   modest single-point steps below the baseline since there's much less
+   room to shrink from 9pt than Writer's own 18pt starting point has.
+   Worth a real look once built and adjusting this one array literal if
+   any step doesn't actually read well. */
+static short kMarkdownZoomLevels[] = { -2, -1, 0, 3, 9 };
 
 short CurrentWriterFontSize(void)
 {
-    return FONT_SIZE + kZoomLevels[gWriterZoomIndex];
+    return FONT_SIZE + kWriterZoomLevels[gWriterZoomIndex];
 }
 
 short CurrentMarkdownFontSize(void)
 {
-    return FONT_SIZE + kZoomLevels[gMarkdownZoomIndex];
+    return gPrefs.markdownFontSize + kMarkdownZoomLevels[gMarkdownZoomIndex];
 }
 
 static void LoadOneZoomPref(short prefID, short *index)
@@ -35,7 +52,10 @@ static void LoadOneZoomPref(short prefID, short *index)
 
 void LoadZoomPref(void)
 {
-    LoadOneZoomPref(kWriterZoomPrefID, &gWriterZoomIndex);
+    gWriterZoomIndex = gPrefs.writerZoomIndex;
+    if (gWriterZoomIndex < 0 || gWriterZoomIndex >= kNumZoomLevels)
+        gWriterZoomIndex = kZoomBaselineIndex;
+
     LoadOneZoomPref(kMarkdownZoomPrefID, &gMarkdownZoomIndex);
 }
 
@@ -128,8 +148,18 @@ static void RescaleStyles(TEHandle te, short oldBase, short newBase)
     rebuilds itself from its own current zoom index on every switch
     into it (see above), and touching the inactive TE here would just
     be extra work for no visible effect.
+
+    No longer file-local (app.h now declares it) -- DoPreferences
+    (preferences.c) calls this too, so an edited Writer zoom value from
+    the Preferences window's Save button takes effect on the front
+    document immediately rather than only on next launch, reusing this
+    function's own rescale/persist/redraw logic rather than duplicating
+    it. Still doesn't NULL-check doc itself, matching the established
+    DoZoom/DoZoomReset convention (every caller checks FrontDocument()
+    != NULL before calling in, not this function) -- DoPreferences's
+    own call site does the same.
 */
-static void ApplyWriterZoomIndex(short newIndex)
+void ApplyWriterZoomIndex(short newIndex)
 {
     DocumentPtr doc = FrontDocument();
     short oldBase;
@@ -143,7 +173,8 @@ static void ApplyWriterZoomIndex(short newIndex)
     newBase = CurrentWriterFontSize();
 
     RescaleStyles(doc->hiddenTE, oldBase, newBase);
-    SaveOneZoomPref(kWriterZoomPrefID, gWriterZoomIndex);
+    gPrefs.writerZoomIndex = gWriterZoomIndex;
+    SavePreferences();
     AdjustScrollbar();
     InvalRect(&doc->window->portRect);
 }
