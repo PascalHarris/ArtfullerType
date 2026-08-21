@@ -646,8 +646,8 @@ void SyncHiddenToCanonical(void)
             if (firstStyle.tsFace & bold) {
                 short lvl;
 
-                for (lvl = 1; lvl <= 3; lvl++) {
-                    if (firstStyle.tsSize == CurrentWriterFontSize() + (4 - lvl) * 4) {
+                for (lvl = 1; lvl <= 6; lvl++) {
+                    if (firstStyle.tsSize == CurrentWriterFontSize() + kHeadingSizeDeltas[lvl - 1]) {
                         headingLevel = lvl;
                         isHeading = true;
                         break;
