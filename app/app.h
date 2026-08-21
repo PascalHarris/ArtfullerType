@@ -104,16 +104,22 @@
 #define iSelectAll 8
 #define iPreferences 10
 
-#define mStyle   129
-#define iBold    1
-#define iItalic  2
-#define iCode    3
-#define iStrike  4
-#define iH1      6
-#define iH2      7
-#define iH3      8
-#define iLink    10
-#define iNone    12
+#define mStyle       129
+#define iTextFormat  1
+#define iHeading     2
+#define iLink        4
+#define iNone        6
+
+#define mTextFormat  150
+#define iBold        1
+#define iItalic      2
+#define iCode        3
+#define iStrike      4
+
+#define mHeading     151
+#define iH1          1
+#define iH2          2
+#define iH3          3
 
 #define kSaveChangesAlert 130
 #define kSaveBtn          1
@@ -185,6 +191,8 @@ extern MenuHandle gFileMenu;
 extern MenuHandle gViewMenu;
 extern MenuHandle gEditMenu;
 extern MenuHandle gStyleMenu;
+extern MenuHandle gTextFormatMenu;
+extern MenuHandle gHeadingMenu;
 extern MenuHandle gWindowMenu;
 extern short gWriterZoomIndex;
 extern short gMarkdownZoomIndex;

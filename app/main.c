@@ -76,6 +76,8 @@ MenuHandle gFileMenu;
 MenuHandle gViewMenu;
 MenuHandle gEditMenu;
 MenuHandle gStyleMenu;
+MenuHandle gTextFormatMenu;
+MenuHandle gHeadingMenu;
 MenuHandle gWindowMenu;
 short gWriterZoomIndex = kZoomBaselineIndex;
 short gMarkdownZoomIndex = kZoomBaselineIndex;
@@ -188,8 +190,16 @@ static void MakeMenu(void)
     DisableItem(gEditMenu, iRedo);
 
     gStyleMenu = NewMenu(mStyle, "\pStyle");
-    AppendMenu(gStyleMenu, "\pBold/B;Italic/I;Code/K;Strikethrough;(-;Heading 1/1;Heading 2/2;Heading 3/3;(-;Link/L;(-;None");
+    AppendMenu(gStyleMenu, "\pText Format/\x1B!\x96;Heading/\x1B!\x97;(-;Link/L;(-;None");
     InsertMenu(gStyleMenu, 0);
+
+    gTextFormatMenu = NewMenu(mTextFormat, "\pText Format");
+    AppendMenu(gTextFormatMenu, "\pBold/B;Italic/I;Code/K;Strikethrough");
+    InsertMenu(gTextFormatMenu, -1);
+
+    gHeadingMenu = NewMenu(mHeading, "\pHeading");
+    AppendMenu(gHeadingMenu, "\pHeading 1/1;Heading 2/2;Heading 3/3");
+    InsertMenu(gHeadingMenu, -1);
 
     gViewMenu = NewMenu(mView, "\pView");
     AppendMenu(gViewMenu, "\pMarkdown;Writer;(-;Distraction Free;(-;Zoom In/=;Zoom Out/-;Default Size/0");
@@ -757,34 +767,50 @@ static void DoMenuCommand(long menuResult)
         }
         if (menuItem == iPreferences)
             DoPreferences();
-    } else if (menuID == mStyle) {
+    } else if (menuID == mStyle || menuID == mTextFormat || menuID == mHeading) {
         if (doc != NULL) {
             doc->dirty = true;
             PushUndoSnapshot();
             doc->typingRunActive = false;
             if (doc->hideMarkdown) {
-                switch (menuItem) {
-                    case iBold:   ToggleFace(bold); break;
-                    case iItalic: ToggleFace(italic); break;
-                    case iCode:   ToggleCode(); break;
-                    case iStrike: break; /* no native strikethrough on classic Mac text styles */
-                    case iH1:     ToggleHeadingHidden(1); break;
-                    case iH2:     ToggleHeadingHidden(2); break;
-                    case iH3:     ToggleHeadingHidden(3); break;
-                    case iLink:   DoLinkHidden(); break;
-                    case iNone:   ClearSelectionStyleHidden(); break;
+                if (menuID == mTextFormat) {
+                    switch (menuItem) {
+                        case iBold:   ToggleFace(bold); break;
+                        case iItalic: ToggleFace(italic); break;
+                        case iCode:   ToggleCode(); break;
+                        case iStrike: break; /* no native strikethrough on classic Mac text styles */
+                    }
+                } else if (menuID == mHeading) {
+                    switch (menuItem) {
+                        case iH1: ToggleHeadingHidden(1); break;
+                        case iH2: ToggleHeadingHidden(2); break;
+                        case iH3: ToggleHeadingHidden(3); break;
+                    }
+                } else {
+                    switch (menuItem) {
+                        case iLink: DoLinkHidden(); break;
+                        case iNone: ClearSelectionStyleHidden(); break;
+                    }
                 }
             } else {
-                switch (menuItem) {
-                    case iBold:   WrapSelection("**", "**"); break;
-                    case iItalic: WrapSelection("*", "*"); break;
-                    case iCode:   WrapSelection("`", "`"); break;
-                    case iStrike: WrapSelection("~~", "~~"); break;
-                    case iH1:     ApplyHeading(1); break;
-                    case iH2:     ApplyHeading(2); break;
-                    case iH3:     ApplyHeading(3); break;
-                    case iLink:   DoLink(); break;
-                    case iNone:   ClearMarkdownInSelection(); break;
+                if (menuID == mTextFormat) {
+                    switch (menuItem) {
+                        case iBold:   WrapSelection("**", "**"); break;
+                        case iItalic: WrapSelection("*", "*"); break;
+                        case iCode:   WrapSelection("`", "`"); break;
+                        case iStrike: WrapSelection("~~", "~~"); break;
+                    }
+                } else if (menuID == mHeading) {
+                    switch (menuItem) {
+                        case iH1: ApplyHeading(1); break;
+                        case iH2: ApplyHeading(2); break;
+                        case iH3: ApplyHeading(3); break;
+                    }
+                } else {
+                    switch (menuItem) {
+                        case iLink: DoLink(); break;
+                        case iNone: ClearMarkdownInSelection(); break;
+                    }
                 }
                 ClearStyles();
             }
