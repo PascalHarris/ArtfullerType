@@ -19,8 +19,8 @@ static const unsigned char kSplashImageBits[kSplashImageHeight * kSplashImageRow
 };
 
 /* Bump this on every release. */
-static const unsigned char kVersionString[] = "\pv0.1.2-alpha";
-static const unsigned char kGitHubURL[] = "\pgithub.com/ActionRetro";
+static const unsigned char kVersionString[] = "\pv0.5.0-alpha";
+static const unsigned char kGitHubURL[] = "\pgithub.com/ActionRetro github.com/pascalharris";
 
 static pascal void DrawSplashTitle(DialogPtr dlg, short itemNo)
 {
@@ -38,7 +38,7 @@ static pascal void DrawSplashTitle(DialogPtr dlg, short itemNo)
     TextFont(0);
     TextSize(0);
     TextFace(bold);
-    BlockMove("\pThe Artful Type", s, 16);
+    BlockMove("\pThe Artful (Dodger) Type", s, 25);
     textWidth = StringWidth(s);
     MoveTo(box.left + (box.right - box.left - textWidth) / 2, box.top + 18);
     DrawString(s);
