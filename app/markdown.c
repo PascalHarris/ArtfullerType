@@ -18,6 +18,20 @@ typedef struct {
 } StyleOp;
 
 /*
+    Heading sizes -- point deltas from CurrentWriterFontSize(), one per
+    level (index 0 = Heading 1 ... index 5 = Heading 6). Deliberately a
+    plain, hand-editable table rather than a computed formula: the
+    original formula (CurrentWriterFontSize() + (4-level)*4) only ever
+    covered 3 levels and went negative once extended to 6 (level 5 -> -4,
+    level 6 -> -8), meaning lower-priority headings would have rendered
+    *smaller* than body text -- backwards from what a heading hierarchy
+    should look like. These six values are a starting point, not a
+    final answer -- adjust freely; every place that reads this table
+    picks up a changed value automatically, no other code to touch.
+*/
+static short kHeadingSizeDeltas[] = { 14, 12, 10, 8, 6, 4 };
+
+/*
     Color mode's syntax-coloring pass -- PREFERENCES_DESIGN.md section
     8.5. A second pass layered on top of ClearStyles's own uniform
     baseline, not a replacement for it: this only ever changes color on
@@ -113,7 +127,7 @@ void ApplyMarkdownSyntaxColors(void)
         if (i == 0 || (*srcH)[i - 1] == '\r') {
             short level = 0;
 
-            while (level < 3 && i + level < len && (*srcH)[i + level] == '#')
+            while (level < 6 && i + level < len && (*srcH)[i + level] == '#')
                 level++;
             if (level > 0 && i + level < len && (*srcH)[i + level] == ' ') {
                 long lineEnd = i + level + 1;
@@ -157,6 +171,22 @@ void ApplyMarkdownSyntaxColors(void)
                     ops[opCount].start = (short) i;
                     ops[opCount].end = (short) (j + 2);
                     ops[opCount].kind = 'B';
+                    opCount++;
+                }
+                i = j + 2;
+                continue;
+            }
+        }
+        if (i + 1 < len && (*srcH)[i] == '_' && (*srcH)[i + 1] == '_') {
+            long j = i + 2;
+
+            while (j + 1 < len && !((*srcH)[j] == '_' && (*srcH)[j + 1] == '_'))
+                j++;
+            if (j + 1 < len) {
+                if (opCount < MAX_STYLE_OPS) {
+                    ops[opCount].start = (short) i;
+                    ops[opCount].end = (short) (j + 2);
+                    ops[opCount].kind = 'U';
                     opCount++;
                 }
                 i = j + 2;
@@ -229,7 +259,8 @@ void ApplyMarkdownSyntaxColors(void)
         switch (ops[k].kind) {
             case 'H': ts.tsColor = NamedColorToRGB(gPrefs.headingColor);  break;
             case 'L': ts.tsColor = NamedColorToRGB(gPrefs.linkColor);     break;
-            case 'B': /* fall through -- bold/italic/strikethrough all emphasisColor */
+            case 'B': /* fall through -- bold/italic/strikethrough/underline all emphasisColor */
+            case 'U': /* fall through */
             case 'I': ts.tsColor = NamedColorToRGB(gPrefs.emphasisColor); break;
             case 'C': ts.tsColor = NamedColorToRGB(gPrefs.codeColor);     break;
             default:  continue;
@@ -353,7 +384,7 @@ void BuildHiddenView(void)
         if (i == 0 || (*srcH)[i - 1] == '\r') {
             short level = 0;
 
-            while (level < 3 && i + level < len && (*srcH)[i + level] == '#')
+            while (level < 6 && i + level < len && (*srcH)[i + level] == '#')
                 level++;
             if (level > 0 && i + level < len && (*srcH)[i + level] == ' ') {
                 long lineStart = i + level + 1;
@@ -390,6 +421,26 @@ void BuildHiddenView(void)
                     ops[opCount].start = (short) outStart;
                     ops[opCount].end = (short) outLen;
                     ops[opCount].kind = 'B';
+                    opCount++;
+                }
+                i = j + 2;
+                continue;
+            }
+        }
+        if (i + 1 < len && (*srcH)[i] == '_' && (*srcH)[i + 1] == '_') {
+            long j = i + 2;
+
+            while (j + 1 < len && !((*srcH)[j] == '_' && (*srcH)[j + 1] == '_'))
+                j++;
+            if (j + 1 < len) {
+                long outStart = outLen, m;
+
+                for (m = i + 2; m < j; m++)
+                    (*outH)[outLen++] = (*srcH)[m];
+                if (opCount < MAX_STYLE_OPS) {
+                    ops[opCount].start = (short) outStart;
+                    ops[opCount].end = (short) outLen;
+                    ops[opCount].kind = 'U';
                     opCount++;
                 }
                 i = j + 2;
@@ -504,6 +555,10 @@ void BuildHiddenView(void)
                 opStyle.tsFace = italic;
                 TESetStyle(doFace, &opStyle, true, doc->hiddenTE);
                 break;
+            case 'U':
+                opStyle.tsFace = underline;
+                TESetStyle(doFace, &opStyle, true, doc->hiddenTE);
+                break;
             case 'C':
                 GetFNum("\pMonaco", &opStyle.tsFont);
                 TESetStyle(doFont, &opStyle, true, doc->hiddenTE);
@@ -512,12 +567,12 @@ void BuildHiddenView(void)
                 opStyle.tsFace = underline;
                 opStyle.tsColor.red = ops[k].linkID;
                 opStyle.tsColor.green = 0;
-                opStyle.tsColor.blue = 0;
+                opStyle.tsColor.blue = 65535;
                 TESetStyle(doFace + doColor, &opStyle, true, doc->hiddenTE);
                 break;
             case 'H':
                 opStyle.tsFace = bold;
-                opStyle.tsSize = CurrentWriterFontSize() + (4 - ops[k].level) * 4;
+                opStyle.tsSize = CurrentWriterFontSize() + kHeadingSizeDeltas[ops[k].level - 1];
                 TESetStyle(doFace + doSize, &opStyle, true, doc->hiddenTE);
                 break;
         }
@@ -611,11 +666,11 @@ void SyncHiddenToCanonical(void)
             outLen += (lineEnd - lineStart);
         } else {
             long i = lineStart;
-            Boolean inBold = false, inItalic = false, inCode = false, inLink = false;
+            Boolean inBold = false, inItalic = false, inCode = false, inLink = false, inUnderline = false;
             Str255 curLinkURL;
 
             while (i <= lineEnd) {
-                Boolean wantBold = false, wantItalic = false, wantCode = false, wantLink = false;
+                Boolean wantBold = false, wantItalic = false, wantCode = false, wantLink = false, wantUnderline = false;
                 short linkID = 0;
 
                 if (i < lineEnd) {
@@ -626,18 +681,33 @@ void SyncHiddenToCanonical(void)
                     wantBold = (st.tsFace & bold) != 0;
                     wantItalic = (st.tsFace & italic) != 0;
                     wantCode = (st.tsFont == monacoFont);
-                    wantLink = (st.tsFace & underline) != 0;
+                    /* Link and plain underline share the same tsFace bit
+                       (underline), distinguished only by color -- a link
+                       is always blue (tsColor.blue == 65535, established
+                       everywhere a link is styled), plain underline never
+                       is, since it deliberately never touches color at
+                       all. The two are mutually exclusive by
+                       construction: a run is styled as one or the
+                       other, never both. */
+                    wantLink = (st.tsFace & underline) != 0 && st.tsColor.blue == 65535;
+                    wantUnderline = (st.tsFace & underline) != 0 && st.tsColor.blue != 65535;
                     linkID = st.tsColor.red;
                 }
 
-                /* Close innermost-first: code, italic, bold, then link
-                   (link is the outermost wrapper, [bold link](url)). */
+                /* Close innermost-first: code, italic, bold, underline,
+                   then link (link is the outermost wrapper, [bold
+                   link](url)). */
                 if (inCode && !wantCode) { (*outH)[outLen++] = '`'; inCode = false; }
                 if (inItalic && !wantItalic) { (*outH)[outLen++] = '*'; inItalic = false; }
                 if (inBold && !wantBold) {
                     (*outH)[outLen++] = '*';
                     (*outH)[outLen++] = '*';
                     inBold = false;
+                }
+                if (inUnderline && !wantUnderline) {
+                    (*outH)[outLen++] = '_';
+                    (*outH)[outLen++] = '_';
+                    inUnderline = false;
                 }
                 if (inLink && !wantLink) {
                     (*outH)[outLen++] = ']';
@@ -655,6 +725,11 @@ void SyncHiddenToCanonical(void)
                         BlockMove(doc->linkURLs[linkID], curLinkURL, doc->linkURLs[linkID][0] + 1);
                     else
                         curLinkURL[0] = 0;
+                }
+                if (!inUnderline && wantUnderline) {
+                    (*outH)[outLen++] = '_';
+                    (*outH)[outLen++] = '_';
+                    inUnderline = true;
                 }
                 if (!inBold && wantBold) {
                     (*outH)[outLen++] = '*';
@@ -729,7 +804,7 @@ Handle EncodeSelectionAsMarkdown(short start, short end, TEHandle te)
     short li;
     short monacoFont;
     long i;
-    Boolean inBold = false, inItalic = false, inCode = false, inLink = false;
+    Boolean inBold = false, inItalic = false, inCode = false, inLink = false, inUnderline = false;
     Str255 curLinkURL;
 
     srcH = (**te).hText;
@@ -747,7 +822,7 @@ Handle EncodeSelectionAsMarkdown(short start, short end, TEHandle te)
 
     i = start;
     while (i <= end) {
-        Boolean wantBold = false, wantItalic = false, wantCode = false, wantLink = false;
+        Boolean wantBold = false, wantItalic = false, wantCode = false, wantLink = false, wantUnderline = false;
         short linkID = 0;
 
         if (i < end) {
@@ -758,7 +833,10 @@ Handle EncodeSelectionAsMarkdown(short start, short end, TEHandle te)
             wantBold = (st.tsFace & bold) != 0;
             wantItalic = (st.tsFace & italic) != 0;
             wantCode = (st.tsFont == monacoFont);
-            wantLink = (st.tsFace & underline) != 0;
+            /* Same link/underline split as SyncHiddenToCanonical -- see
+               that function's own comment for why. */
+            wantLink = (st.tsFace & underline) != 0 && st.tsColor.blue == 65535;
+            wantUnderline = (st.tsFace & underline) != 0 && st.tsColor.blue != 65535;
             linkID = st.tsColor.red;
         }
 
@@ -768,6 +846,11 @@ Handle EncodeSelectionAsMarkdown(short start, short end, TEHandle te)
             (*outH)[outLen++] = '*';
             (*outH)[outLen++] = '*';
             inBold = false;
+        }
+        if (inUnderline && !wantUnderline) {
+            (*outH)[outLen++] = '_';
+            (*outH)[outLen++] = '_';
+            inUnderline = false;
         }
         if (inLink && !wantLink) {
             (*outH)[outLen++] = ']';
@@ -785,6 +868,11 @@ Handle EncodeSelectionAsMarkdown(short start, short end, TEHandle te)
                 BlockMove(doc->linkURLs[linkID], curLinkURL, doc->linkURLs[linkID][0] + 1);
             else
                 curLinkURL[0] = 0;
+        }
+        if (!inUnderline && wantUnderline) {
+            (*outH)[outLen++] = '_';
+            (*outH)[outLen++] = '_';
+            inUnderline = true;
         }
         if (!inBold && wantBold) {
             (*outH)[outLen++] = '*';
@@ -840,6 +928,26 @@ void InsertMarkdownAsStyled(Handle srcH, long srcLen, TEHandle te)
                     ops[opCount].start = (short) outStart;
                     ops[opCount].end = (short) outLen;
                     ops[opCount].kind = 'B';
+                    opCount++;
+                }
+                i = j + 2;
+                continue;
+            }
+        }
+        if (i + 1 < srcLen && (*srcH)[i] == '_' && (*srcH)[i + 1] == '_') {
+            long j = i + 2;
+
+            while (j + 1 < srcLen && !((*srcH)[j] == '_' && (*srcH)[j + 1] == '_'))
+                j++;
+            if (j + 1 < srcLen) {
+                long outStart = outLen, m;
+
+                for (m = i + 2; m < j; m++)
+                    (*outH)[outLen++] = (*srcH)[m];
+                if (opCount < MAX_STYLE_OPS) {
+                    ops[opCount].start = (short) outStart;
+                    ops[opCount].end = (short) outLen;
+                    ops[opCount].kind = 'U';
                     opCount++;
                 }
                 i = j + 2;
@@ -955,6 +1063,10 @@ void InsertMarkdownAsStyled(Handle srcH, long srcLen, TEHandle te)
                 opStyle.tsFace = italic;
                 TESetStyle(doFace, &opStyle, true, te);
                 break;
+            case 'U':
+                opStyle.tsFace = underline;
+                TESetStyle(doFace, &opStyle, true, te);
+                break;
             case 'C':
                 GetFNum("\pMonaco", &opStyle.tsFont);
                 TESetStyle(doFont, &opStyle, true, te);
@@ -963,7 +1075,7 @@ void InsertMarkdownAsStyled(Handle srcH, long srcLen, TEHandle te)
                 opStyle.tsFace = underline;
                 opStyle.tsColor.red = ops[k].linkID;
                 opStyle.tsColor.green = 0;
-                opStyle.tsColor.blue = 0;
+                opStyle.tsColor.blue = 65535;
                 TESetStyle(doFace + doColor, &opStyle, true, te);
                 break;
         }
@@ -1163,6 +1275,33 @@ void ToggleFace(Style face)
     TESetStyle(doFace, &ts, true, doc->hiddenTE);
 }
 
+/*
+    Underline and link share the same tsFace bit (underline),
+    distinguished only by color -- a link is always blue
+    (tsColor.blue == 65535), plain underline never touches color at
+    all. A dedicated function rather than a direct ToggleFace(underline)
+    call: toggling the shared bit naively on a selection that's
+    currently a link would strip its visual underline while leaving its
+    blue color and internal URL association (tsColor.red, the link ID)
+    untouched -- a silently broken, inconsistent state, not a real
+    "remove the link" operation. Refuses to touch a link-starting
+    selection at all; "None" (ClearSelectionStyleHidden) is the
+    existing, correct way to remove a link entirely.
+*/
+void ToggleUnderlineHidden(void)
+{
+    DocumentPtr doc = FrontDocument();
+    TextStyle ts;
+    short lh, fa;
+
+    TEGetStyle((**doc->hiddenTE).selStart, &ts, &lh, &fa, doc->hiddenTE);
+    if ((ts.tsFace & underline) != 0 && ts.tsColor.blue == 65535)
+        return;
+
+    ts.tsFace = SelectionHasFace(underline) ? normal : underline;
+    TESetStyle(doFace, &ts, true, doc->hiddenTE);
+}
+
 /* Prompts for a URL; returns true and fills in `url` if OK was clicked. */
 static Boolean ShowLinkURLDialog(unsigned char *url)
 {
@@ -1214,7 +1353,7 @@ void DoLinkHidden(void)
         ts.tsFace = underline;
         ts.tsColor.red = AddLinkURL(url);
         ts.tsColor.green = 0;
-        ts.tsColor.blue = 0;
+        ts.tsColor.blue = 65535;
         TESetStyle(doFace + doColor, &ts, true, doc->hiddenTE);
     }
 }
@@ -1259,7 +1398,7 @@ void ToggleHeadingHidden(short level)
     HUnlock(textH);
 
     TEGetStyle((short) lineStart, &ts, &lh, &fa, doc->hiddenTE);
-    isThisLevel = (ts.tsFace & bold) && (ts.tsSize == CurrentWriterFontSize() + (4 - level) * 4);
+    isThisLevel = (ts.tsFace & bold) && (ts.tsSize == CurrentWriterFontSize() + kHeadingSizeDeltas[level - 1]);
 
     TESetSelect((short) lineStart, (short) lineEnd, doc->hiddenTE);
     if (isThisLevel) {
@@ -1267,7 +1406,7 @@ void ToggleHeadingHidden(short level)
         ts.tsSize = CurrentWriterFontSize();
     } else {
         ts.tsFace = bold;
-        ts.tsSize = CurrentWriterFontSize() + (4 - level) * 4;
+        ts.tsSize = CurrentWriterFontSize() + kHeadingSizeDeltas[level - 1];
     }
     TESetStyle(doFace + doSize, &ts, true, doc->hiddenTE);
 }
@@ -1371,7 +1510,7 @@ void DetectInlineMarkdown(char justTyped)
         short level = 0;
         long p = lineStart;
 
-        while (level < 3 && p < caret - 1 && (*textH)[p] == '#') {
+        while (level < 6 && p < caret - 1 && (*textH)[p] == '#') {
             level++;
             p++;
         }
@@ -1383,7 +1522,7 @@ void DetectInlineMarkdown(char justTyped)
             TEDelete(doc->hiddenTE);
             TESetSelect((short) lineStart, (short) lineStart, doc->hiddenTE);
             ts.tsFace = bold;
-            ts.tsSize = CurrentWriterFontSize() + (4 - level) * 4;
+            ts.tsSize = CurrentWriterFontSize() + kHeadingSizeDeltas[level - 1];
             TESetStyle(doFace + doSize, &ts, true, doc->hiddenTE);
             InvalidateHeightCache();
             return;
@@ -1500,6 +1639,62 @@ void DetectInlineMarkdown(char justTyped)
                 }
             }
         }
+    } else if (justTyped == '_') {
+        if (caret >= 4 && (*textH)[caret - 2] == '_' && (*textH)[caret - 1] == '_') {
+            long p = caret - 4;
+
+            while (p >= lineStart) {
+                if ((*textH)[p] == '_' && (*textH)[p + 1] == '_' && p + 2 < caret - 2) {
+                    long innerStart = p + 2;
+                    long innerEnd = caret - 2;
+                    TextStyle ts;
+
+                    HUnlock(textH);
+                    TESetSelect((short) innerEnd, (short) caret, doc->hiddenTE);
+                    TEDelete(doc->hiddenTE);
+                    TESetSelect((short) p, (short) innerStart, doc->hiddenTE);
+                    TEDelete(doc->hiddenTE);
+
+                    ts.tsFace = underline;
+                    TESetSelect((short) p, (short) (innerEnd - 2), doc->hiddenTE);
+                    TESetStyle(doFace, &ts, true, doc->hiddenTE);
+                    SetTypingStyleNormal((short) (innerEnd - 2));
+                    InvalidateHeightCache();
+                    return;
+                }
+                p--;
+            }
+
+            /* No opening __ behind the caret -- the just-typed __ may
+               instead be an OPENING delimiter for a closing __ that's
+               already sitting later in the line (going back to
+               underlined text that was typed earlier, closing
+               delimiter first). */
+            {
+                long q = caret + 1;
+
+                while (q + 1 < lineEnd) {
+                    if ((*textH)[q] == '_' && (*textH)[q + 1] == '_') {
+                        long innerEnd = q;
+                        TextStyle ts;
+
+                        HUnlock(textH);
+                        TESetSelect((short) innerEnd, (short) (innerEnd + 2), doc->hiddenTE);
+                        TEDelete(doc->hiddenTE);
+                        TESetSelect((short) (caret - 2), (short) caret, doc->hiddenTE);
+                        TEDelete(doc->hiddenTE);
+
+                        ts.tsFace = underline;
+                        TESetSelect((short) (caret - 2), (short) (innerEnd - 2), doc->hiddenTE);
+                        TESetStyle(doFace, &ts, true, doc->hiddenTE);
+                        SetTypingStyleNormal((short) (caret - 2));
+                        InvalidateHeightCache();
+                        return;
+                    }
+                    q++;
+                }
+            }
+        }
     } else if (justTyped == '`') {
         long p = caret - 2;
 
@@ -1592,7 +1787,7 @@ void DetectInlineMarkdown(char justTyped)
                 ts.tsFace = underline;
                 ts.tsColor.red = linkID;
                 ts.tsColor.green = 0;
-                ts.tsColor.blue = 0;
+                ts.tsColor.blue = 65535;
                 TESetSelect((short) openBracketPos, (short) (closeBracketPos - 1), doc->hiddenTE);
                 TESetStyle(doFace + doColor, &ts, true, doc->hiddenTE);
                 SetTypingStyleNormal((short) (closeBracketPos - 1));
@@ -1657,7 +1852,7 @@ void ClearMarkdownInSelection(void)
             short level = 0;
             long p = i;
 
-            while (level < 3 && p < selEnd && (*textH)[p] == '#') {
+            while (level < 6 && p < selEnd && (*textH)[p] == '#') {
                 level++;
                 p++;
             }

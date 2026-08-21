@@ -115,11 +115,15 @@
 #define iItalic      2
 #define iCode        3
 #define iStrike      4
+#define iUnderline   5
 
 #define mHeading     151
 #define iH1          1
 #define iH2          2
 #define iH3          3
+#define iH4          4
+#define iH5          5
+#define iH6          6
 
 #define kSaveChangesAlert 130
 #define kSaveBtn          1
@@ -225,6 +229,7 @@ void WrapSelection(char *prefix, char *suffix);
 void ApplyHeading(short level);
 void DoLink(void);
 void ToggleFace(Style face);
+void ToggleUnderlineHidden(void);
 void DoLinkHidden(void);
 void ToggleCode(void);
 void ToggleHeadingHidden(short level);

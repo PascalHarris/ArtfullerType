@@ -194,11 +194,11 @@ static void MakeMenu(void)
     InsertMenu(gStyleMenu, 0);
 
     gTextFormatMenu = NewMenu(mTextFormat, "\pText Format");
-    AppendMenu(gTextFormatMenu, "\pBold/B;Italic/I;Code/K;Strikethrough");
+    AppendMenu(gTextFormatMenu, "\pBold/B;Italic/I;Code/K;Strikethrough;Underline/U");
     InsertMenu(gTextFormatMenu, -1);
 
     gHeadingMenu = NewMenu(mHeading, "\pHeading");
-    AppendMenu(gHeadingMenu, "\pHeading 1/1;Heading 2/2;Heading 3/3");
+    AppendMenu(gHeadingMenu, "\pHeading 1/1;Heading 2/2;Heading 3/3;Heading 4/4;Heading 5/5;Heading 6/6");
     InsertMenu(gHeadingMenu, -1);
 
     gViewMenu = NewMenu(mView, "\pView");
@@ -775,16 +775,20 @@ static void DoMenuCommand(long menuResult)
             if (doc->hideMarkdown) {
                 if (menuID == mTextFormat) {
                     switch (menuItem) {
-                        case iBold:   ToggleFace(bold); break;
-                        case iItalic: ToggleFace(italic); break;
-                        case iCode:   ToggleCode(); break;
-                        case iStrike: break; /* no native strikethrough on classic Mac text styles */
+                        case iBold:      ToggleFace(bold); break;
+                        case iItalic:    ToggleFace(italic); break;
+                        case iCode:      ToggleCode(); break;
+                        case iStrike:    break; /* no native strikethrough on classic Mac text styles */
+                        case iUnderline: ToggleUnderlineHidden(); break;
                     }
                 } else if (menuID == mHeading) {
                     switch (menuItem) {
                         case iH1: ToggleHeadingHidden(1); break;
                         case iH2: ToggleHeadingHidden(2); break;
                         case iH3: ToggleHeadingHidden(3); break;
+                        case iH4: ToggleHeadingHidden(4); break;
+                        case iH5: ToggleHeadingHidden(5); break;
+                        case iH6: ToggleHeadingHidden(6); break;
                     }
                 } else {
                     switch (menuItem) {
@@ -795,16 +799,20 @@ static void DoMenuCommand(long menuResult)
             } else {
                 if (menuID == mTextFormat) {
                     switch (menuItem) {
-                        case iBold:   WrapSelection("**", "**"); break;
-                        case iItalic: WrapSelection("*", "*"); break;
-                        case iCode:   WrapSelection("`", "`"); break;
-                        case iStrike: WrapSelection("~~", "~~"); break;
+                        case iBold:      WrapSelection("**", "**"); break;
+                        case iItalic:    WrapSelection("*", "*"); break;
+                        case iCode:      WrapSelection("`", "`"); break;
+                        case iStrike:    WrapSelection("~~", "~~"); break;
+                        case iUnderline: WrapSelection("__", "__"); break;
                     }
                 } else if (menuID == mHeading) {
                     switch (menuItem) {
                         case iH1: ApplyHeading(1); break;
                         case iH2: ApplyHeading(2); break;
                         case iH3: ApplyHeading(3); break;
+                        case iH4: ApplyHeading(4); break;
+                        case iH5: ApplyHeading(5); break;
+                        case iH6: ApplyHeading(6); break;
                     }
                 } else {
                     switch (menuItem) {
