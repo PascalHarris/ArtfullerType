@@ -190,7 +190,7 @@ static void MakeMenu(void)
     DisableItem(gEditMenu, iRedo);
 
     gStyleMenu = NewMenu(mStyle, "\pStyle");
-    AppendMenu(gStyleMenu, "\pText Format/\x1B!\x96;Heading/\x1B!\x97;(-;Link/L;(-;None");
+    AppendMenu(gStyleMenu, "\pText Format/\x1B!\x96;Heading/\x1B!\x97;Blockquote;Code Block;(-;Link/L;(-;None");
     InsertMenu(gStyleMenu, 0);
 
     gTextFormatMenu = NewMenu(mTextFormat, "\pText Format");
@@ -792,8 +792,10 @@ static void DoMenuCommand(long menuResult)
                     }
                 } else {
                     switch (menuItem) {
-                        case iLink: DoLinkHidden(); break;
-                        case iNone: ClearSelectionStyleHidden(); break;
+                        case iBlockquote: ToggleBlockquoteHidden(); break;
+                        case iCodeBlock:  ToggleCodeBlockHidden(); break;
+                        case iLink:       DoLinkHidden(); break;
+                        case iNone:       ClearSelectionStyleHidden(); break;
                     }
                 }
             } else {
@@ -816,8 +818,10 @@ static void DoMenuCommand(long menuResult)
                     }
                 } else {
                     switch (menuItem) {
-                        case iLink: DoLink(); break;
-                        case iNone: ClearMarkdownInSelection(); break;
+                        case iBlockquote: ApplyBlockquote(); break;
+                        case iCodeBlock:  ApplyCodeBlock(); break;
+                        case iLink:       DoLink(); break;
+                        case iNone:       ClearMarkdownInSelection(); break;
                     }
                 }
                 ClearStyles();

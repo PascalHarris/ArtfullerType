@@ -79,6 +79,8 @@ void ApplyMarkdownSyntaxColors(void)
     Handle srcH;
     long len;
     long i;
+    Boolean inFence = false;
+    long fenceStart = 0;
     static StyleOp ops[MAX_STYLE_OPS];
     short opCount;
     short k;
@@ -125,6 +127,30 @@ void ApplyMarkdownSyntaxColors(void)
     i = 0;
     while (i < len) {
         if (i == 0 || (*srcH)[i - 1] == '\r') {
+            if (i + 2 < len && (*srcH)[i] == '`' && (*srcH)[i + 1] == '`' && (*srcH)[i + 2] == '`' &&
+                (i + 3 == len || (*srcH)[i + 3] == '\r')) {
+                if (!inFence) {
+                    inFence = true;
+                    fenceStart = i;
+                } else {
+                    inFence = false;
+                    if (opCount < MAX_STYLE_OPS) {
+                        ops[opCount].start = (short) fenceStart;
+                        ops[opCount].end = (short) (i + 3);
+                        ops[opCount].kind = 'F';
+                        opCount++;
+                    }
+                }
+                i = (i + 3 < len) ? i + 4 : len;
+                continue;
+            }
+
+            if (inFence) {
+                while (i < len && (*srcH)[i] != '\r')
+                    i++;
+                continue;
+            }
+
             short level = 0;
 
             while (level < 6 && i + level < len && (*srcH)[i + level] == '#')
@@ -262,7 +288,8 @@ void ApplyMarkdownSyntaxColors(void)
             case 'B': /* fall through -- bold/italic/strikethrough/underline all emphasisColor */
             case 'U': /* fall through */
             case 'I': ts.tsColor = NamedColorToRGB(gPrefs.emphasisColor); break;
-            case 'C': ts.tsColor = NamedColorToRGB(gPrefs.codeColor);     break;
+            case 'C': /* fall through -- fenced code blocks use the same codeColor as inline code */
+            case 'F': ts.tsColor = NamedColorToRGB(gPrefs.codeColor);     break;
             default:  continue;
         }
         TESetSelect(ops[k].start, ops[k].end, doc->te);
@@ -354,6 +381,7 @@ void BuildHiddenView(void)
     Handle outH;
     long outLen;
     long i;
+    Boolean inFence = false;
     static StyleOp ops[MAX_STYLE_OPS];
     short opCount;
     short fontNum;
@@ -382,6 +410,31 @@ void BuildHiddenView(void)
     i = 0;
     while (i < len) {
         if (i == 0 || (*srcH)[i - 1] == '\r') {
+            if (i + 2 < len && (*srcH)[i] == '`' && (*srcH)[i + 1] == '`' && (*srcH)[i + 2] == '`' &&
+                (i + 3 == len || (*srcH)[i + 3] == '\r')) {
+                inFence = !inFence;
+                i = (i + 3 < len) ? i + 4 : len;
+                continue;
+            }
+
+            if (inFence) {
+                long lineEnd = i;
+                long outStart = outLen;
+
+                while (lineEnd < len && (*srcH)[lineEnd] != '\r') {
+                    (*outH)[outLen++] = (*srcH)[lineEnd];
+                    lineEnd++;
+                }
+                if (opCount < MAX_STYLE_OPS) {
+                    ops[opCount].start = (short) outStart;
+                    ops[opCount].end = (short) outLen;
+                    ops[opCount].kind = 'F';
+                    opCount++;
+                }
+                i = lineEnd;
+                continue;
+            }
+
             short level = 0;
 
             while (level < 6 && i + level < len && (*srcH)[i + level] == '#')
@@ -400,6 +453,25 @@ void BuildHiddenView(void)
                     ops[opCount].end = (short) outLen;
                     ops[opCount].kind = 'H';
                     ops[opCount].level = level;
+                    opCount++;
+                }
+                i = lineEnd;
+                continue;
+            }
+
+            if ((*srcH)[i] == '>' && i + 1 < len && (*srcH)[i + 1] == ' ') {
+                long lineStart = i + 2;
+                long lineEnd = lineStart;
+                long outStart = outLen;
+
+                while (lineEnd < len && (*srcH)[lineEnd] != '\r') {
+                    (*outH)[outLen++] = (*srcH)[lineEnd];
+                    lineEnd++;
+                }
+                if (opCount < MAX_STYLE_OPS) {
+                    ops[opCount].start = (short) outStart;
+                    ops[opCount].end = (short) outLen;
+                    ops[opCount].kind = 'Q';
                     opCount++;
                 }
                 i = lineEnd;
@@ -575,6 +647,20 @@ void BuildHiddenView(void)
                 opStyle.tsSize = CurrentWriterFontSize() + kHeadingSizeDeltas[ops[k].level - 1];
                 TESetStyle(doFace + doSize, &opStyle, true, doc->hiddenTE);
                 break;
+            case 'Q':
+                GetFNum("\pGeneva", &opStyle.tsFont);
+                TESetStyle(doFont, &opStyle, true, doc->hiddenTE);
+                break;
+            case 'F':
+                GetFNum("\pMonaco", &opStyle.tsFont);
+                opStyle.tsFace = condense;
+                if (CurrentWriterFontSize() > 12) {
+                    opStyle.tsSize = 12;
+                    TESetStyle(doFont + doFace + doSize, &opStyle, true, doc->hiddenTE);
+                } else {
+                    TESetStyle(doFont + doFace, &opStyle, true, doc->hiddenTE);
+                }
+                break;
         }
     }
 
@@ -603,7 +689,9 @@ void SyncHiddenToCanonical(void)
     long outCap;
     long outLen;
     long lineStart;
+    Boolean inFence = false;
     short monacoFont;
+    short genevaFont;
     Rect savedViewRect;
     long urlSpace;
     short li;
@@ -620,11 +708,19 @@ void SyncHiddenToCanonical(void)
     urlSpace = 0;
     for (li = 1; li <= doc->linkCount; li++)
         urlSpace += doc->linkURLs[li][0];
-    outCap = len * 2 + 64 + urlSpace;
+    /* len*2 covers the generic inline-delimiter path (**, _, `, etc.),
+       which only ever re-adds characters that were already implicitly
+       part of hiddenTE's own styled runs. Fence markers are different:
+       BuildHiddenView strips ``` lines entirely, so hiddenTE never
+       contains them at all -- every ``` this function emits is genuinely
+       new. Worst case is one fence transition per line (a line is at
+       minimum just its own \r), each adding up to 4 bytes, hence len*4. */
+    outCap = len * 2 + len * 4 + 64 + urlSpace;
     outH = NewHandle(outCap);
     outLen = 0;
 
     GetFNum("\pMonaco", &monacoFont);
+    GetFNum("\pGeneva", &genevaFont);
 
     HLock(srcH);
     HLock(outH);
@@ -634,6 +730,9 @@ void SyncHiddenToCanonical(void)
         long lineEnd = lineStart;
         short headingLevel = 0;
         Boolean isHeading = false;
+        Boolean isBlockquote = false;
+        Boolean isCodeBlockLine = false;
+        Boolean emittedAsFence = false;
 
         while (lineEnd < len && (*srcH)[lineEnd] != '\r')
             lineEnd++;
@@ -654,13 +753,52 @@ void SyncHiddenToCanonical(void)
                     }
                 }
             }
+            if (!isHeading && firstStyle.tsFont == genevaFont)
+                isBlockquote = true;
+            if (!isHeading && !isBlockquote && firstStyle.tsFont == monacoFont &&
+                (firstStyle.tsFace & condense) != 0)
+                isCodeBlockLine = true;
         }
 
-        if (isHeading) {
+        if (inFence) {
+            if (lineEnd == lineStart || isCodeBlockLine) {
+                BlockMove(*srcH + lineStart, *outH + outLen, lineEnd - lineStart);
+                outLen += (lineEnd - lineStart);
+                emittedAsFence = true;
+            } else {
+                inFence = false;
+                (*outH)[outLen++] = '`';
+                (*outH)[outLen++] = '`';
+                (*outH)[outLen++] = '`';
+                (*outH)[outLen++] = '\r';
+                /* This line itself isn't part of the fence -- falls
+                   through to the existing heading/blockquote/generic
+                   handling below, unchanged. */
+            }
+        } else if (isCodeBlockLine) {
+            inFence = true;
+            (*outH)[outLen++] = '`';
+            (*outH)[outLen++] = '`';
+            (*outH)[outLen++] = '`';
+            (*outH)[outLen++] = '\r';
+            BlockMove(*srcH + lineStart, *outH + outLen, lineEnd - lineStart);
+            outLen += (lineEnd - lineStart);
+            emittedAsFence = true;
+        }
+
+        if (emittedAsFence) {
+            /* Skip the existing heading/blockquote/generic block below
+               entirely -- already emitted. */
+        } else if (isHeading) {
             short k;
 
             for (k = 0; k < headingLevel; k++)
                 (*outH)[outLen++] = '#';
+            (*outH)[outLen++] = ' ';
+            BlockMove(*srcH + lineStart, *outH + outLen, lineEnd - lineStart);
+            outLen += (lineEnd - lineStart);
+        } else if (isBlockquote) {
+            (*outH)[outLen++] = '>';
             (*outH)[outLen++] = ' ';
             BlockMove(*srcH + lineStart, *outH + outLen, lineEnd - lineStart);
             outLen += (lineEnd - lineStart);
@@ -748,6 +886,12 @@ void SyncHiddenToCanonical(void)
         if (lineEnd < len)
             (*outH)[outLen++] = '\r';
         lineStart = lineEnd + 1;
+    }
+
+    if (inFence) {
+        (*outH)[outLen++] = '`';
+        (*outH)[outLen++] = '`';
+        (*outH)[outLen++] = '`';
     }
 
     HUnlock(srcH);
@@ -1214,6 +1358,77 @@ void ApplyHeading(short level)
     TEInsert(prefix, level + 1, doc->te);
 }
 
+void ApplyBlockquote(void)
+{
+    DocumentPtr doc = FrontDocument();
+    short selStart;
+    short lineStart;
+    long textLen;
+    Handle textH;
+    static char prefix[] = "> ";
+    Boolean alreadyBlockquote;
+
+    doc->dirty = true;
+
+    selStart = (**doc->te).selStart;
+    textH = (**doc->te).hText;
+    textLen = (**doc->te).teLength;
+
+    lineStart = selStart;
+    HLock(textH);
+    while (lineStart > 0 && (*textH)[lineStart - 1] != '\r')
+        lineStart--;
+    HUnlock(textH);
+
+    HLock(textH);
+    alreadyBlockquote =
+        (lineStart + 2 <= textLen) &&
+        (memcmp(*textH + lineStart, prefix, 2) == 0);
+    HUnlock(textH);
+
+    if (alreadyBlockquote) {
+        TESetSelect(lineStart, lineStart + 2, doc->te);
+        TEDelete(doc->te);
+        return;
+    }
+
+    TESetSelect(lineStart, lineStart, doc->te);
+    TEInsert(prefix, 2, doc->te);
+}
+
+void ApplyCodeBlock(void)
+{
+    DocumentPtr doc = FrontDocument();
+    short selStart, selEnd;
+    short lineStart, lineEnd;
+    Handle textH;
+    long len;
+    static char openFence[] = "```\r";
+    static char closeFence[] = "\r```";
+
+    doc->dirty = true;
+
+    selStart = (**doc->te).selStart;
+    selEnd = (**doc->te).selEnd;
+    textH = (**doc->te).hText;
+    len = (**doc->te).teLength;
+
+    HLock(textH);
+    lineStart = selStart;
+    while (lineStart > 0 && (*textH)[lineStart - 1] != '\r')
+        lineStart--;
+    lineEnd = selEnd;
+    while (lineEnd < len && (*textH)[lineEnd] != '\r')
+        lineEnd++;
+    HUnlock(textH);
+
+    TESetSelect(lineEnd, lineEnd, doc->te);
+    TEInsert(closeFence, 4, doc->te);
+
+    TESetSelect(lineStart, lineStart, doc->te);
+    TEInsert(openFence, 4, doc->te);
+}
+
 void DoLink(void)
 {
     DocumentPtr doc = FrontDocument();
@@ -1411,6 +1626,92 @@ void ToggleHeadingHidden(short level)
     TESetStyle(doFace + doSize, &ts, true, doc->hiddenTE);
 }
 
+void ToggleBlockquoteHidden(void)
+{
+    DocumentPtr doc = FrontDocument();
+    short selStart;
+    long lineStart, lineEnd;
+    Handle textH;
+    long len;
+    TextStyle ts;
+    short lh, fa;
+    short genevaFont, timesFont;
+    Boolean isBlockquote;
+
+    selStart = (**doc->hiddenTE).selStart;
+    textH = (**doc->hiddenTE).hText;
+    len = (**doc->hiddenTE).teLength;
+
+    HLock(textH);
+    lineStart = selStart;
+    while (lineStart > 0 && (*textH)[lineStart - 1] != '\r')
+        lineStart--;
+    lineEnd = lineStart;
+    while (lineEnd < len && (*textH)[lineEnd] != '\r')
+        lineEnd++;
+    HUnlock(textH);
+
+    GetFNum("\pGeneva", &genevaFont);
+    GetFNum("\pTimes", &timesFont);
+
+    TEGetStyle((short) lineStart, &ts, &lh, &fa, doc->hiddenTE);
+    isBlockquote = (ts.tsFont == genevaFont);
+
+    TESetSelect((short) lineStart, (short) lineEnd, doc->hiddenTE);
+    ts.tsFont = isBlockquote ? timesFont : genevaFont;
+    TESetStyle(doFont, &ts, true, doc->hiddenTE);
+}
+
+void ToggleCodeBlockHidden(void)
+{
+    DocumentPtr doc = FrontDocument();
+    short selStart, selEnd;
+    long lineStart, lineEnd;
+    Handle textH;
+    long len;
+    TextStyle ts;
+    short lh, fa;
+    short monacoFont, timesFont;
+    Boolean isCodeBlock;
+
+    selStart = (**doc->hiddenTE).selStart;
+    selEnd = (**doc->hiddenTE).selEnd;
+    textH = (**doc->hiddenTE).hText;
+    len = (**doc->hiddenTE).teLength;
+
+    HLock(textH);
+    lineStart = selStart;
+    while (lineStart > 0 && (*textH)[lineStart - 1] != '\r')
+        lineStart--;
+    lineEnd = selEnd;
+    while (lineEnd < len && (*textH)[lineEnd] != '\r')
+        lineEnd++;
+    HUnlock(textH);
+
+    GetFNum("\pMonaco", &monacoFont);
+    GetFNum("\pTimes", &timesFont);
+
+    TEGetStyle((short) lineStart, &ts, &lh, &fa, doc->hiddenTE);
+    isCodeBlock = (ts.tsFont == monacoFont && (ts.tsFace & condense) != 0);
+
+    TESetSelect((short) lineStart, (short) lineEnd, doc->hiddenTE);
+    if (isCodeBlock) {
+        ts.tsFont = timesFont;
+        ts.tsFace = normal;
+        ts.tsSize = CurrentWriterFontSize();
+        TESetStyle(doFont + doFace + doSize, &ts, true, doc->hiddenTE);
+    } else {
+        ts.tsFont = monacoFont;
+        ts.tsFace = condense;
+        if (CurrentWriterFontSize() > 12) {
+            ts.tsSize = 12;
+            TESetStyle(doFont + doFace + doSize, &ts, true, doc->hiddenTE);
+        } else {
+            TESetStyle(doFont + doFace, &ts, true, doc->hiddenTE);
+        }
+    }
+}
+
 /*
     Sets the style at a zero-length selection (the insertion point) --
     Style TextEdit uses this as the style for whatever gets typed next,
@@ -1524,6 +1825,21 @@ void DetectInlineMarkdown(char justTyped)
             ts.tsFace = bold;
             ts.tsSize = CurrentWriterFontSize() + kHeadingSizeDeltas[level - 1];
             TESetStyle(doFace + doSize, &ts, true, doc->hiddenTE);
+            InvalidateHeightCache();
+            return;
+        }
+
+        if ((*textH)[lineStart] == '>' && lineStart == caret - 1) {
+            TextStyle ts;
+            short genevaFont;
+
+            GetFNum("\pGeneva", &genevaFont);
+            HUnlock(textH);
+            TESetSelect((short) lineStart, (short) caret, doc->hiddenTE);
+            TEDelete(doc->hiddenTE);
+            TESetSelect((short) lineStart, (short) lineStart, doc->hiddenTE);
+            ts.tsFont = genevaFont;
+            TESetStyle(doFont, &ts, true, doc->hiddenTE);
             InvalidateHeightCache();
             return;
         }
@@ -1833,6 +2149,7 @@ void ClearMarkdownInSelection(void)
     Handle outH;
     long outLen;
     long i;
+    Boolean inFence = false;
 
     selStart = (**doc->te).selStart;
     selEnd = (**doc->te).selEnd;
@@ -1849,6 +2166,21 @@ void ClearMarkdownInSelection(void)
     i = selStart;
     while (i < selEnd) {
         if (i == 0 || (*textH)[i - 1] == '\r') {
+            if (i + 2 < selEnd && (*textH)[i] == '`' && (*textH)[i + 1] == '`' && (*textH)[i + 2] == '`' &&
+                (i + 3 == selEnd || (*textH)[i + 3] == '\r')) {
+                inFence = !inFence;
+                i = (i + 3 < selEnd) ? i + 4 : selEnd;
+                continue;
+            }
+
+            if (inFence) {
+                while (i < selEnd && (*textH)[i] != '\r') {
+                    (*outH)[outLen++] = (*textH)[i];
+                    i++;
+                }
+                continue;
+            }
+
             short level = 0;
             long p = i;
 
@@ -1858,6 +2190,11 @@ void ClearMarkdownInSelection(void)
             }
             if (level > 0 && p < selEnd && (*textH)[p] == ' ') {
                 i = p + 1;
+                continue;
+            }
+
+            if ((*textH)[i] == '>' && i + 1 < selEnd && (*textH)[i + 1] == ' ') {
+                i += 2;
                 continue;
             }
         }

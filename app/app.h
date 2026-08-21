@@ -107,8 +107,10 @@
 #define mStyle       129
 #define iTextFormat  1
 #define iHeading     2
-#define iLink        4
-#define iNone        6
+#define iBlockquote  3
+#define iCodeBlock   4
+#define iLink        6
+#define iNone        8
 
 #define mTextFormat  150
 #define iBold        1
@@ -227,12 +229,16 @@ Handle EncodeSelectionAsMarkdown(short start, short end, TEHandle te);
 void InsertMarkdownAsStyled(Handle srcH, long srcLen, TEHandle te);
 void WrapSelection(char *prefix, char *suffix);
 void ApplyHeading(short level);
+void ApplyBlockquote(void);
+void ApplyCodeBlock(void);
 void DoLink(void);
 void ToggleFace(Style face);
 void ToggleUnderlineHidden(void);
 void DoLinkHidden(void);
 void ToggleCode(void);
 void ToggleHeadingHidden(short level);
+void ToggleBlockquoteHidden(void);
+void ToggleCodeBlockHidden(void);
 void DetectInlineMarkdown(char justTyped);
 void MaybeRecolorMarkdown(char justTyped);
 void ClearSelectionStyleHidden(void);
