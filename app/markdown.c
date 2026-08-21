@@ -71,6 +71,7 @@ void ApplyMarkdownSyntaxColors(void)
     short savedStart;
     short savedEnd;
     TextStyle baseTs;
+    Rect savedViewRect;
 
     if (!gPrefs.markdownColorMode || !ScreenSupportsColor())
         return;
@@ -82,6 +83,20 @@ void ApplyMarkdownSyntaxColors(void)
 
     savedStart = (**doc->te).selStart;
     savedEnd = (**doc->te).selEnd;
+
+    /* Same technique SyncHiddenToCanonical already uses around its own
+       multi-step rebuild (including its own call into ClearStyles) --
+       every TESetStyle call below has redraw=true and would otherwise
+       repaint immediately, once for the baseline reset and once per
+       detected run, which is exactly what produced a visible flicker
+       on every keystroke once this function started running from
+       MaybeRecolorMarkdown's own, direct, per-keystroke call. Safe to
+       nest if this function is reached through ClearStyles's own,
+       separate suppression (e.g. via SyncHiddenToCanonical): each
+       layer saves and restores its own "before" state, so an inner
+       SuppressDrawing/RestoreDrawing pair here doesn't disturb an
+       outer one already in effect. */
+    SuppressDrawing(doc->te, &savedViewRect);
 
     baseTs.tsColor.red = baseTs.tsColor.green = baseTs.tsColor.blue = 0;
     TESetSelect(0, 32767, doc->te);
@@ -225,6 +240,8 @@ void ApplyMarkdownSyntaxColors(void)
 
     TESetSelect(savedStart, savedEnd, doc->te);
 
+    RestoreDrawing(doc->te, &savedViewRect);
+
     InitCursor();
 }
 
@@ -235,7 +252,12 @@ void ApplyMarkdownSyntaxColors(void)
     meaningful. Color mode's own syntax-coloring pass
     (ApplyMarkdownSyntaxColors, above) runs immediately afterward,
     layered on top of this baseline rather than replacing it -- see
-    that function's own comment.
+    that function's own comment. Wrapped in SuppressDrawing/
+    RestoreDrawing for the same reason that function's own comment
+    explains: TESetStyle's own redraw=true would otherwise repaint
+    the whole document immediately, which is visible as flicker on
+    any caller that runs this often (in practice, ApplyMarkdownSyntaxColors
+    itself, via a live-typing trigger).
 */
 void ClearStyles(void)
 {
@@ -244,6 +266,9 @@ void ClearStyles(void)
     short fontNum;
     short savedStart = (**doc->te).selStart;
     short savedEnd = (**doc->te).selEnd;
+    Rect savedViewRect;
+
+    SuppressDrawing(doc->te, &savedViewRect);
 
     GetFNum(gPrefs.markdownFontName, &fontNum);
     ts.tsFont = fontNum;
@@ -257,6 +282,8 @@ void ClearStyles(void)
     TESetSelect(savedStart, savedEnd, doc->te);
 
     ApplyMarkdownSyntaxColors();
+
+    RestoreDrawing(doc->te, &savedViewRect);
 }
 
 /*
