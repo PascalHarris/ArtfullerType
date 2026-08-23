@@ -171,7 +171,7 @@ static void MakeMenu(void)
        different icon; a real Apple menu's main job historically is
        desk accessory access, not the About item. */
     gAppleMenu = NewMenu(mApple, "\p\024");
-    AppendMenu(gAppleMenu, "\pAbout The Artful Type...;(-");
+    AppendMenu(gAppleMenu, "\pAbout DodgerType...;(-");
     AppendResMenu(gAppleMenu, 'DRVR');
     InsertMenu(gAppleMenu, 0);
 
@@ -221,7 +221,7 @@ static void MakeMenu(void)
        remove once there's an actual decision about Help content.
 
     helpMenu = NewMenu(mHelp, "\pHelp");
-    AppendMenu(helpMenu, "\pAbout The Artful Type...");
+    AppendMenu(helpMenu, "\pAbout DodgerType...");
     InsertMenu(helpMenu, 0);
     */
 

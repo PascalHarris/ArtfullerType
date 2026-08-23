@@ -397,6 +397,7 @@ void BuildHiddenView(void)
     long outLen;
     long i;
     Boolean inFence = false;
+    short pendingQuoteOpIndex = -1;
     static StyleOp ops[MAX_STYLE_OPS];
     short opCount;
     short fontNum;
@@ -425,6 +426,11 @@ void BuildHiddenView(void)
     i = 0;
     while (i < len) {
         if (i == 0 || (*srcH)[i - 1] == '\r') {
+            if (pendingQuoteOpIndex >= 0) {
+                ops[pendingQuoteOpIndex].end = (short) outLen;
+                pendingQuoteOpIndex = -1;
+            }
+
             if (i + 2 < len && (*srcH)[i] == '`' && (*srcH)[i + 1] == '`' && (*srcH)[i + 2] == '`' &&
                 (i + 3 == len || (*srcH)[i + 3] == '\r')) {
                 inFence = !inFence;
@@ -479,21 +485,13 @@ void BuildHiddenView(void)
             }
 
             if ((*srcH)[i] == '>' && i + 1 < len && (*srcH)[i + 1] == ' ') {
-                long lineStart = i + 2;
-                long lineEnd = lineStart;
-                long outStart = outLen;
-
-                while (lineEnd < len && (*srcH)[lineEnd] != '\r') {
-                    (*outH)[outLen++] = (*srcH)[lineEnd];
-                    lineEnd++;
-                }
+                i += 2;
                 if (opCount < MAX_STYLE_OPS) {
-                    ops[opCount].start = (short) outStart;
-                    ops[opCount].end = (short) outLen;
+                    ops[opCount].start = (short) outLen;
                     ops[opCount].kind = 'Q';
+                    pendingQuoteOpIndex = opCount;
                     opCount++;
                 }
-                i = lineEnd;
                 continue;
             }
         }
@@ -614,6 +612,9 @@ void BuildHiddenView(void)
         (*outH)[outLen++] = (*srcH)[i];
         i++;
     }
+
+    if (pendingQuoteOpIndex >= 0)
+        ops[pendingQuoteOpIndex].end = (short) outLen;
 
     HUnlock(srcH);
     HUnlock(outH);
@@ -813,15 +814,15 @@ void SyncHiddenToCanonical(void)
             (*outH)[outLen++] = ' ';
             BlockMove(*srcH + lineStart, *outH + outLen, lineEnd - lineStart);
             outLen += (lineEnd - lineStart);
-        } else if (isBlockquote) {
-            (*outH)[outLen++] = '>';
-            (*outH)[outLen++] = ' ';
-            BlockMove(*srcH + lineStart, *outH + outLen, lineEnd - lineStart);
-            outLen += (lineEnd - lineStart);
         } else {
             long i = lineStart;
             Boolean inBold = false, inItalic = false, inCode = false, inLink = false, inUnderline = false;
             Str255 curLinkURL;
+
+            if (isBlockquote) {
+                (*outH)[outLen++] = '>';
+                (*outH)[outLen++] = ' ';
+            }
 
             while (i <= lineEnd) {
                 Boolean wantBold = false, wantItalic = false, wantCode = false, wantLink = false, wantUnderline = false;

@@ -3,7 +3,7 @@
 
 Preferences gPrefs;
 
-#define kPrefsFileName "\pArtfulType Preferences"
+#define kPrefsFileName "\pDodgerType Preferences"
 
 /* Verified via Inside Macintosh (Toolbox Essentials, "Finder Interface
    Reference, Finding Directories, FindFolder"): "vRefNum -- The volume
@@ -559,7 +559,7 @@ void SavePreferences(void)
         buf[len++] = '\r'; \
     } while (0)
 
-    WRITE_LINE("// ArtfulType preferences -- edit directly with any text editor (e.g.");
+    WRITE_LINE("// DodgerType preferences -- edit directly with any text editor (e.g.");
     WRITE_LINE("// BBEdit). One preference per line: a camelCase name, then its value,");
     WRITE_LINE("// space-separated. // starts a comment, whole-line or trailing. Blank");
     WRITE_LINE("// lines are ignored. Boolean values are true or false.");

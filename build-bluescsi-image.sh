@@ -16,7 +16,7 @@ set -e
 cd "$(dirname "$0")"
 
 VOLUME_IMAGE="vmac/ArtfulType_20M.dsk"
-DEVICE_IMAGE_FINAL="vmac/The Artful Type.hda"
+DEVICE_IMAGE_FINAL="vmac/DodgerType.hda"
 
 echo "Converting volume image to device image..."
 djjr convert to-device "$VOLUME_IMAGE" "$DEVICE_IMAGE_FINAL"

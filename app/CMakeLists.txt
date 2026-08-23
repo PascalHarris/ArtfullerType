@@ -5,9 +5,9 @@
 # make
 
 cmake_minimum_required(VERSION 3.10)
-project(ArtfulType C)
+project(DodgerType C)
 
-add_application(ArtfulType
+add_application(DodgerType
     main.c
     document.c
     scrolling.c
@@ -22,9 +22,9 @@ add_application(ArtfulType
     CREATOR "ArtT"
     )
 
-set_target_properties(ArtfulType PROPERTIES COMPILE_OPTIONS -ffunction-sections)
+set_target_properties(DodgerType PROPERTIES COMPILE_OPTIONS -ffunction-sections)
 if(CMAKE_SYSTEM_NAME MATCHES Retro68)
-    set_target_properties(ArtfulType PROPERTIES LINK_FLAGS "-Wl,-gc-sections -Wl,--mac-strip-macsbug")
+    set_target_properties(DodgerType PROPERTIES LINK_FLAGS "-Wl,-gc-sections -Wl,--mac-strip-macsbug")
 else()
-    set_target_properties(ArtfulType PROPERTIES LINK_FLAGS "-Wl,-gc-sections")
+    set_target_properties(DodgerType PROPERTIES LINK_FLAGS "-Wl,-gc-sections")
 endif()
