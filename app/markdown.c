@@ -32,6 +32,19 @@ typedef struct {
 static short kHeadingSizeDeltas[] = { 14, 12, 10, 8, 6, 4 };
 
 /*
+    Code size (inline and fenced block both) -- a point delta from
+    CurrentWriterFontSize(), same shape as kHeadingSizeDeltas above and
+    for the same reason: a fixed, absolute size doesn't track zoom at
+    all once the baseline exceeds it, freezing code text at one size
+    regardless of how far in the rest of the document zooms. A delta
+    from baseline scales proportionally instead. Inline code and fenced
+    code blocks share this one constant deliberately, so they always
+    render at the same size as each other. -2 is a starting point, not
+    a final answer -- adjust freely.
+*/
+static short kCodeSizeDelta = -2;
+
+/*
     Color mode's syntax-coloring pass -- PREFERENCES_DESIGN.md section
     8.5. A second pass layered on top of ClearStyles's own uniform
     baseline, not a replacement for it: this only ever changes color on
@@ -147,6 +160,8 @@ void ApplyMarkdownSyntaxColors(void)
 
             if (inFence) {
                 while (i < len && (*srcH)[i] != '\r')
+                    i++;
+                if (i < len)
                     i++;
                 continue;
             }
@@ -431,6 +446,10 @@ void BuildHiddenView(void)
                     ops[opCount].kind = 'F';
                     opCount++;
                 }
+                if (lineEnd < len) {
+                    (*outH)[outLen++] = (*srcH)[lineEnd];
+                    lineEnd++;
+                }
                 i = lineEnd;
                 continue;
             }
@@ -633,7 +652,8 @@ void BuildHiddenView(void)
                 break;
             case 'C':
                 GetFNum("\pMonaco", &opStyle.tsFont);
-                TESetStyle(doFont, &opStyle, true, doc->hiddenTE);
+                opStyle.tsSize = CurrentWriterFontSize() + kCodeSizeDelta;
+                TESetStyle(doFont + doSize, &opStyle, true, doc->hiddenTE);
                 break;
             case 'L':
                 opStyle.tsFace = underline;
@@ -654,12 +674,8 @@ void BuildHiddenView(void)
             case 'F':
                 GetFNum("\pMonaco", &opStyle.tsFont);
                 opStyle.tsFace = condense;
-                if (CurrentWriterFontSize() > 12) {
-                    opStyle.tsSize = 12;
-                    TESetStyle(doFont + doFace + doSize, &opStyle, true, doc->hiddenTE);
-                } else {
-                    TESetStyle(doFont + doFace, &opStyle, true, doc->hiddenTE);
-                }
+                opStyle.tsSize = CurrentWriterFontSize() + kCodeSizeDelta;
+                TESetStyle(doFont + doFace + doSize, &opStyle, true, doc->hiddenTE);
                 break;
         }
     }
@@ -1213,7 +1229,8 @@ void InsertMarkdownAsStyled(Handle srcH, long srcLen, TEHandle te)
                 break;
             case 'C':
                 GetFNum("\pMonaco", &opStyle.tsFont);
-                TESetStyle(doFont, &opStyle, true, te);
+                opStyle.tsSize = CurrentWriterFontSize() + kCodeSizeDelta;
+                TESetStyle(doFont + doSize, &opStyle, true, te);
                 break;
             case 'L':
                 opStyle.tsFace = underline;
@@ -1579,13 +1596,22 @@ void ToggleCode(void)
     TextStyle ts;
     short lh, fa;
     short monacoFont, timesFont;
+    Boolean isCode;
 
     GetFNum("\pMonaco", &monacoFont);
     GetFNum("\pTimes", &timesFont);
 
     TEGetStyle((**doc->hiddenTE).selStart, &ts, &lh, &fa, doc->hiddenTE);
-    ts.tsFont = (ts.tsFont == monacoFont) ? timesFont : monacoFont;
-    TESetStyle(doFont, &ts, true, doc->hiddenTE);
+    isCode = (ts.tsFont == monacoFont);
+
+    if (isCode) {
+        ts.tsFont = timesFont;
+        ts.tsSize = CurrentWriterFontSize();
+    } else {
+        ts.tsFont = monacoFont;
+        ts.tsSize = CurrentWriterFontSize() + kCodeSizeDelta;
+    }
+    TESetStyle(doFont + doSize, &ts, true, doc->hiddenTE);
 }
 
 void ToggleHeadingHidden(short level)
@@ -1703,12 +1729,8 @@ void ToggleCodeBlockHidden(void)
     } else {
         ts.tsFont = monacoFont;
         ts.tsFace = condense;
-        if (CurrentWriterFontSize() > 12) {
-            ts.tsSize = 12;
-            TESetStyle(doFont + doFace + doSize, &ts, true, doc->hiddenTE);
-        } else {
-            TESetStyle(doFont + doFace, &ts, true, doc->hiddenTE);
-        }
+        ts.tsSize = CurrentWriterFontSize() + kCodeSizeDelta;
+        TESetStyle(doFont + doFace + doSize, &ts, true, doc->hiddenTE);
     }
 }
 
@@ -2027,8 +2049,9 @@ void DetectInlineMarkdown(char justTyped)
                 TEDelete(doc->hiddenTE);
 
                 GetFNum("\pMonaco", &ts.tsFont);
+                ts.tsSize = CurrentWriterFontSize() + kCodeSizeDelta;
                 TESetSelect((short) p, (short) (innerEnd - 1), doc->hiddenTE);
-                TESetStyle(doFont, &ts, true, doc->hiddenTE);
+                TESetStyle(doFont + doSize, &ts, true, doc->hiddenTE);
                 SetTypingStyleNormal((short) (innerEnd - 1));
                 InvalidateHeightCache();
                 return;
@@ -2054,8 +2077,9 @@ void DetectInlineMarkdown(char justTyped)
                     TEDelete(doc->hiddenTE);
 
                     GetFNum("\pMonaco", &ts.tsFont);
+                    ts.tsSize = CurrentWriterFontSize() + kCodeSizeDelta;
                     TESetSelect((short) (caret - 1), (short) (innerEnd - 1), doc->hiddenTE);
-                    TESetStyle(doFont, &ts, true, doc->hiddenTE);
+                    TESetStyle(doFont + doSize, &ts, true, doc->hiddenTE);
                     SetTypingStyleNormal((short) (caret - 1));
                     InvalidateHeightCache();
                     return;
@@ -2175,6 +2199,10 @@ void ClearMarkdownInSelection(void)
 
             if (inFence) {
                 while (i < selEnd && (*textH)[i] != '\r') {
+                    (*outH)[outLen++] = (*textH)[i];
+                    i++;
+                }
+                if (i < selEnd) {
                     (*outH)[outLen++] = (*textH)[i];
                     i++;
                 }
