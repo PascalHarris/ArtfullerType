@@ -2,7 +2,7 @@
 
 A distraction-free Markdown writing app for classic Macintosh computers.
 
-DodgerType is a small, focused writing tool. It hides Markdown syntax while you write, showing styled text instead — headings, bold, italic, and more — while keeping your file as plain, portable `.md` text underneath. Switch to Markdown view any time to see or edit the raw source directly.
+DodgerType is a small, focused writing tool. It hides Markdown syntax while you write, showing styled text instead - headings, bold, italic, and more - while keeping your file as plain, portable `.md` text underneath. Switch to Markdown view any time to see or edit the raw source directly.
 
 ## What it does
 
